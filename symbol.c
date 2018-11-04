@@ -1,0 +1,1 @@
+target-alpha-linux/symbol.c

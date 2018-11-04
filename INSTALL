@@ -1,0 +1,89 @@
+INSTALLATION DIRECTIONS
+-----------------------
+
+The following details how to build and install the SimpleScalar simulators:
+
+	a) vi Makefile
+
+	Make sure all compile options are set for your host, we've listed
+	the options for the OS/compiler combinations that were tested,
+	uncomment one of these if appropriate.  You'll likely not have to
+	change anything for the supported hosts, and if you need to change
+	anything, it will likely be the CC variable (which specifies
+	the ANSI C compiler to use to build the simulators).  NOTE: the
+	simulators must be built with an ANSI-C compatible compiler, if you
+	have problems with your compiler, try using GNU GCC as it is known
+	to build the simulators on all the supported platforms.
+
+	b) make config-pisa			(to build SimpleScalar/PISA)
+	   or
+	   make config-alpha			(to build SimpleScalar/Alpha)
+
+	Execute one of the above commands to configure the SimpleScalar
+	build.  The SimpleScalar/PISA build executes SimpleScalar PISA
+	(Portable ISA) binaries (the old "SimpleScalar ISA"), and the
+	SimpleScalar/Alpha build executes statically linked Alpha OSF
+	binaries.  If building with MS VC++ on Windows NT, first delete
+	the symbolic link "tests/".
+
+	c) make
+
+	This builds the simplescalar simulators.
+
+	d) make sim-tests
+
+	This tests the simulators, this step will take anywhere from ~5 min
+	to an hour, depending on the performance of your host.  Inspect the
+	output of this command, when the script diff's the outputs of the
+	simulators against the known good outputs, there should be no
+	differences.
+
+	e) vi pipeview.pl textprof.pl
+
+	Configure these two perl scripts by placing the location of your
+	perl executable on the first line of each script.
+
+
+INSTALLATION ISSUES
+-------------------
+1. (ULTRIX and LINX)
+There is a problem with <termio.h> - it calls <sys/termio.h>, but there
+isn't a <sys/termio.h>.  I had to put a link in for that one on both my 
+ULTRIX and LINUX setups.
+
+2.  (ALPHA running LINUX)
+There is a problem in "syscall.c" - there is (apparently) no <bsd/sgtty.h>
+on Linux for the Alpha. I commented it out, and it worked.  (This is Redhat
+4.2, I think).
+
+3. (WINDOWS NT)
+As of SimpleScalar 3.0, the SimpleScalar simulator (for PISA or Alpha)
+should build out-of-the-box for MS VC++ and Cygnus/Win32 on Windows NT.
+
+NOTE: due to bugs in MS VC++ __int64 support, MS VC++ version 5.0 plus
+service pack 3 (or later) is required to build SimpleScalar/Alpha.
+
+NOTE1: the SimpleScalar PISA compiler tools will not build on Windows NT.
+Either build the binaries on another little-endian supported platform,
+or grab them from the binaries release available from the same place
+you found this package.
+
+There are some deficiencies with this port; specifically, some of the
+system calls made by SimpleScalar PISA or Alpha OSF binaries have no
+obvious counterparts under WinNT (e.g., getrusage()), when these system
+calls are made, a warning is printed.  A better way to use SimpleScalar
+on Windows NT is to rely completely on extern I/O traces (EIO traces).
+Generate these on a more capable host and then run them on Windows NT.
+Since only file I/O is required to run an EIO trace, any tracable program
+can later re-run under Windows NT.  See eio.readme in the doc directory
+for details...
+
+Steve Reinhardt ported the simulators to the WinNT/Cygnus environment.  Thanks!
+
+
+ADDITIONAL INFORMATION
+----------------------
+For more complete and up-to-date information, check out the SimpleScalar
+web page at:
+
+	http://www.simplescalar.com/

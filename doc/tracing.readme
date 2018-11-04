@@ -1,0 +1,121 @@
+USING TRACES FOR DEBUGGING
+By Eric Larson
+--------------------------
+sim-mase support a tracing mode that can aid in debuggin.  sim-mase will trace
+instructions both in the oracle and at commit.  sim-safe also provides a tracing
+mode in order to compare sim-mase's output.  Since sim-safe is a functional
+simulator, it only traces instructions at commit.
+
+COMMAND LINE REFERENCE
+----------------------
+The option "-v" (verbose) will turn on tracing (among other things):
+
+sim-mase -v tests/eio/test-math.eio >&! test-math.mase
+sim-safe -v tests/eio/test-math.eio >&! test-math.safe
+
+The "-trigger:inst <num>" command can be used to start the tracing at the <num>th
+instruction.  For example, this will start tracing at 35,000th instruction.
+
+sim-mase -v -trigger:inst 35000 tests/eio/test-math.eio >&! test-math.mase
+sim-safe -v -trigger:inst 35000 tests/eio/test-math.eio >&! test-math.safe
+
+NOTE: This command has no effect if "-v" is not speicifed.
+
+The "-max:inst <num>" command can be used to stop the simulation at the <num>th
+instruction.  For example, this will stop the simulation at the 40,000 instruction,
+meaning that the trace will include instructions 35,000 to 40,000:
+
+sim-mase -v -trigger:inst 35000 -max:inst 40000 tests/eio/test-math.eio >&! test-math.mase
+sim-safe -v -trigger:inst 35000 -max:inst 40000 tests/eio/test-math.eio >&! test-math.safe
+
+sim-mase can be run with "-fastfwd <num>" which will skip the first <num> instructions and
+then start the simulation.  The "-trigger:inst" and "-max:inst" start their counts at the
+point where the simulation starts.  However, sim-safe does not have a fastfwd mode.  To
+effectively compare traces, set the fastfwd count to zero.  Alternatively, you can add the
+fastfwd count to the trigger and max for sim-safe but the instruction counts will differ.
+You can either eyeball the differences or create a Perl script similar to extract-trace.pl
+to create files that can be compared using diff.  Here is an example:
+
+sim-mase -v -fastfwd 10000 -trigger:inst 25000 -max:inst 30000 tests/eio/test-math.eio >&! test-math.mase
+sim-safe -v -trigger:inst 35000 -max:inst 40000 tests/eio/test-math.eio >&! test-math.safe
+
+FORMAT OF THE TRACE
+-------------------
+The format of the trace is as follows:
+
+COMMIT:      35344 [xor: 0xd3d45f94] @ 0x1200167f8: subq r4,8,r4
+   ORACLE:       spec [xor: 0xd3d45f6b] @ 0x120016800: ldq r1,8(r16)
+   ORACLE:       spec [xor: 0xd3d45f5b] @ 0x120016804: addq r16,8,r16
+   ORACLE:       spec [xor: 0xd3d450af] @ 0x120016808: bne r4,0x1200167f0
+COMMIT:      35345 [xor: 0xd3d4506c] @ 0x1200167fc: bne r1,0x120016828
+COMMIT:      35346 [xor: 0xc7c14b87] @ 0x120016800: ldq r1,8(r16)
+COMMIT:      35347 [xor: 0xc7c14b77] @ 0x120016804: addq r16,8,r16
+COMMIT:      35348 [xor: 0xc7c14483] @ 0x120016808: bne r4,0x1200167f0
+   ORACLE:      35356 [xor: 0xd5d45f49] @ 0x12001680c: bis r31,r31,r31
+   ORACLE:      35357 [xor: 0xd5d45f51] @ 0x120016810: xor r17,r1,r1
+   ORACLE:      35358 [xor: 0xd5d45fa6] @ 0x120016814: addq r31,255,r6
+   ORACLE:      35359 [xor: 0xd3d45f92] @ 0x120016818: cmpbge r31,r1,r1
+COMMIT:      35349 [xor: 0xc7c14b7f] @ 0x1200167f0: xor r17,r1,r1
+COMMIT:      35350 [xor: 0xd3d45f64] @ 0x1200167f4: cmpbge r31,r1,r1
+COMMIT:      35351 [xor: 0xd3d45f64] @ 0x1200167f8: subq r4,8,r4
+   ORACLE:      35360 [xor: 0xd3d45eab] @ 0x12001681c: sll r6,r18,r6
+COMMIT:      35352 [xor: 0xd3d4509c] @ 0x1200167fc: bne r1,0x120016828
+COMMIT:      35353 [xor: 0xd5d45f59] @ 0x120016800: ldq r1,8(r16)
+COMMIT:      35354 [xor: 0xd5d45f59] @ 0x120016804: addq r16,8,r16
+COMMIT:      35355 [xor: 0xd5d45f51] @ 0x120016808: bne r4,0x1200167f0
+COMMIT:      35356 [xor: 0xd5d45f49] @ 0x12001680c: bis r31,r31,r31
+COMMIT:      35357 [xor: 0xd5d45f51] @ 0x120016810: xor r17,r1,r1
+COMMIT:      35358 [xor: 0xd5d45fa6] @ 0x120016814: addq r31,255,r6
+COMMIT:      35359 [xor: 0xd3d45f92] @ 0x120016818: cmpbge r31,r1,r1
+COMMIT:      35360 [xor: 0xd3d45eab] @ 0x12001681c: sll r6,r18,r6
+
+ORACLE and COMMIT refer to the stage of the pipeline.  (sim-safe only has
+COMMIT).
+
+The second field refers to the instruction number.  If the instruction
+is speculative (oracle only),  it will replaced by "spec".
+
+The xor value is a checksum of the register file contents.  This will
+allow a difference to be detected immediately.
+
+The last two fields refer to the PC and the disassembled instruction.
+
+DEBUGGING
+---------
+There are two uses for the tracing.  One is to compare the committed
+instruction stream of sim-mase to sim-safe.  To do this, you first need
+to extract the trace from the output file:
+
+grep COMMIT test-math.mase > mase.trace
+grep COMMIT test-math.safe > safe.trace
+diff mase.trace safe.trace
+
+Another technique is to compare the oracle trace to the committed
+instruction trace.  To extract the traces, you need to use the script
+extract-trace.pl.  This script will remove the first word (ORACLE or
+COMMIT) and removes all speculative instructions.  Without this, you
+would not be able to diff the resulting files.  Here is the procedure:
+
+grep ORACLE test-mase.mase > mase.oracle.trace
+grep COMMIT test-math.mase > mase.commit.trace
+extract-trace.pl mase.oracle.trace > mase.oracle.trace2
+extract-trace.pl mase.commit.trace > mase.commit.trace2
+diff mase.oracle.trace2 mase.commit.trace2
+
+In either case, the first difference will indicate the failing instruction.
+
+OTHER NOTES
+-----------
+-Syscalls are not executed in the oracle so it is expected they mismatch
+with the commit trace.  Syscalls should not mismatch when comparing sim-mase
+at commit to sim-safe.
+
+-Only instructions on the shadow of a mispredicted branch are marked with
+"spec" in the oracle.  It is possible for the oracle to execute instructions
+that get squashed if there is a checker error or a mispeculation other than
+branch prediction (such as blind load speculation).  In either case, the
+oracle will become out of sync with commit.
+
+-sim-outorder also has a tracing mode that can be turned on with the "-v"
+option but it does not produce output that can be used to diff traces
+created by sim-safe or sim-safe.

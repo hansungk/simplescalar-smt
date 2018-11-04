@@ -1,0 +1,82 @@
+sim-fast: SimpleScalar/Alpha Tool Set version 4.0 of December, 2001.
+Copyright (C) 2000-2001 by The Regents of The University of Michigan.
+Copyright (C) 1994-2001 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
+This version of SimpleScalar is licensed for academic non-commercial use only.
+
+** pre-decoding 240321 insts...done
+sim: command line: ./sim-fast -redir:sim output_3 -v ../test 
+
+sim: simulation started @ Sat Jun  5 16:06:07 2010, options follow:
+
+sim-fast: This simulator implements a very fast functional simulator.  This
+functional simulator implementation is much more difficult to digest than
+the simpler, cleaner sim-safe functional simulator.  By default, this
+simulator performs no instruction error checking, as a result, any
+instruction errors will manifest as simulator execution errors, possibly
+causing sim-fast to execute incorrectly or dump core.  Such is the
+price we pay for speed!!!!
+
+# -config                     # load configuration from a file
+# -dumpconfig                 # dump configuration to a file
+# -h                    false # print help message    
+# -v                     true # verbose operation     
+# -vr                   false # verbose registers operation
+-trigger:inst               0 # trigger instruction for verbose operation
+# -d                    false # enable debug message  
+# -i                    false # start in Dlite debugger
+-seed                       1 # random number generator seed (0 for timer seed)
+# -q                    false # initialize and terminate immediately
+# -chkpt               <null> # restore EIO trace execution from <fname>
+# -redir:sim         output_3 # redirect simulator output to file (non-interactive only)
+# -redir:prog          <null> # redirect simulated program output to file
+-nice                       0 # simulator scheduling priority
+
+sim: ** starting *fast* functional simulation **
+syscall(339): returned 0:0...
+SYS_sbrk: delta: 0x000000000000 (0)
+ld_brk_point: 0x0000200b0000
+syscall(17): returned 0:537591808...
+SYS_sbrk: delta: 0x0000200b0ed0 (537595600)
+ld_brk_point: 0x0000200b0ed0
+syscall(17): returned 0:537595600...
+syscall(256): returned 0:0...
+syscall(257): returned 0:0...
+syscall(24): returned 0:506...
+syscall(24): returned 0:506...
+syscall(47): returned 0:506...
+syscall(47): returned 0:506...
+SYS_sbrk: delta: 0x0000200d2ed0 (537734864)
+ld_brk_point: 0x0000200d2ed0
+syscall(17): returned 0:537734864...
+SYS_sbrk: delta: 0x0000200d4000 (537739264)
+ld_brk_point: 0x0000200d4000
+syscall(17): returned 0:537739264...
+syscall(427): returned 0:0...
+syscall(71): returned 0:65536...
+syscall(4): returned 0:14...
+syscall(405): returned 0:0...
+
+sim: ** simulation statistics **
+sim_num_insn                   7684 # total number of instructions executed
+sim_elapsed_time                  1 # total simulation time in seconds
+sim_inst_rate             7684.0000 # simulation speed (in insts/sec)
+ld_text_base           0x01200001e0 # program text (code) segment base
+ld_text_size                 480640 # program text (code) size in bytes
+ld_data_base           0x01200a58c0 # program initialized data segment base
+ld_data_size                   2776 # program init'ed `.data' and uninit'ed `.bss' size in bytes
+ld_stack_base          0x0000000000 # program stack segment base (highest address in stack)
+ld_stack_size            3766484992 # program initial stack size
+ld_prog_entry          0x01200001e0 # program entry point (initial PC)
+ld_environ_base        0x011f800000 # program environment base address address
+ld_target_big_endian              0 # target executable endian-ness, non-zero if big endian
+mem.page_count                   82 # total number of pages allocated
+mem.page_mem                   656k # total size of memory pages allocated
+mem.ptab_misses               84876 # total first level page table misses
+mem.ptab_accesses           1641808 # total page table accesses
+mem.ptab_miss_rate           0.0517 # first level page table miss rate
+dec.page_count                  235 # total number of pages allocated
+dec.page_mem                  1880k # total size of memory pages allocated
+dec.ptab_misses                 235 # total first level page table misses
+dec.ptab_accesses            961284 # total page table accesses
+dec.ptab_miss_rate           0.0002 # first level page table miss rate
+
