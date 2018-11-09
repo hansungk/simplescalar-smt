@@ -1,2 +1,13 @@
+*.a
 *.o
+sim-bpred
+sim-cache
+sim-cheetah
+sim-eio
+sim-fast
+sim-mase
 sim-outorder
+sim-profile
+sim-safe
+sysprobe
+tags
