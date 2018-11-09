@@ -1,0 +1,9 @@
+* Frontend misses
+
+- Watch for the variable ruu_fetch_issue_delay.
+- Watch ruu_dispatch()
+- Seems like RUU = ROB
+  - struct RUU_station
+
+** I-cache/I-TLB misses
+** Branch misses
