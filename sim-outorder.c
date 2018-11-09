@@ -352,6 +352,25 @@ static counter_t recovery_count = 0;
 /* total non-speculative bogus addresses seen (debug var) */
 static counter_t sim_invalid_addrs;
 
+/* Represents an entry for the FMT.  Tracks and stores frontend miss
+   informations of a single branch. */
+struct FMT_entry {
+  struct RUU_station *rs; /* RUU_station this branch is in */
+  int mispred;            /* is this branch mispredicted? */
+  int branch_penalty;     /* branch penalty counter */
+  int l1_icache_cnt;      /* L1 I-cache miss counter */
+  int l2_icache_cnt;      /* L1 I-cache miss counter */
+  int itlb_cnt;           /* L1 I-cache miss counter */
+};
+
+/* FMT table */
+static struct FMT_entry *FMT;
+
+/* FMT size.  It must have as many rows as the processor supports
+   outstanding branches.  As an upper bound, set it to RUU_size
+   (FIXME). */
+static int FMT_size;
+
 /*
  * simulator state variables
  */

@@ -1,3 +1,4 @@
+*~
 *.a
 *.o
 sim-bpred
@@ -11,3 +12,4 @@ sim-profile
 sim-safe
 sysprobe
 tags
+TAGS
