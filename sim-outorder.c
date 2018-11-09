@@ -365,11 +365,25 @@ struct FMT_entry {
 
 /* FMT table */
 static struct FMT_entry *FMT;
+static int FMT_dispatch_head; /* FMT dispatch head entry */
+static int FMT_dispatch_tail; /* FMT dispatch tail entry */
+static int FMT_fetch;         /* FMT fetch entry */
 
 /* FMT size.  It must have as many rows as the processor supports
    outstanding branches.  As an upper bound, set it to RUU_size
    (FIXME). */
 static int FMT_size;
+
+static void
+fmt_init(void)
+{
+  FMT_size = RUU_size;
+  FMT = calloc(FMT_size, sizeof(struct FMT_entry));
+  if (!FMT)
+    fatal("out of virtual memory");
+
+  FMT_dispatch_head = FMT_dispatch_tail = FMT_fetch = 0;
+}
 
 /*
  * simulator state variables
@@ -1475,6 +1489,7 @@ sim_load_prog(char *fname,		/* program to load */
   readyq_init();
   ruu_init();
   lsq_init();
+  fmt_init();
 
   /* initialize the DLite debugger */
   dlite_init(simoo_reg_obj, simoo_mem_obj, simoo_mstate_obj);

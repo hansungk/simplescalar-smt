@@ -7,3 +7,6 @@
 
 ** I-cache/I-TLB misses
 ** Branch misses
+
+Q.
+- FMT free()?
