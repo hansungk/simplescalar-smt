@@ -358,8 +358,8 @@ struct FMT_entry {
   struct RUU_station *rs; /* RUU_station this branch is in */
   int mispred;            /* is this branch mispredicted? */
   int branch_penalty;     /* branch penalty counter */
-  int l1_icache_cnt;      /* L1 I-cache miss counter */
-  int l2_icache_cnt;      /* L1 I-cache miss counter */
+  int il1_cnt;      /* L1 I-cache miss counter */
+  int il2_cnt;      /* L1 I-cache miss counter */
   int itlb_cnt;           /* L1 I-cache miss counter */
 };
 
@@ -4399,6 +4399,17 @@ ruu_fetch(void)
       /* adjust instruction fetch queue */
       fetch_tail = (fetch_tail + 1) & (ruu_ifq_size - 1);
       fetch_num++;
+
+      /* install into FMT if this is a branch instruction */
+      if (MD_OP_FLAGS(op) & F_CTRL) {
+        FMT[FMT_fetch].rs = NULL;
+        FMT[FMT_fetch].mispred = 0;
+        FMT[FMT_fetch].branch_penalty = 0;
+        FMT[FMT_fetch].il1_cnt = 0;
+        FMT[FMT_fetch].il2_cnt = 0;
+        FMT[FMT_fetch].itlb_cnt = 0;
+        FMT_fetch = (FMT_fetch + 1) % FMT_size;
+      }
     }
 }
 
