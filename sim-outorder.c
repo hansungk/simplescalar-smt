@@ -2332,10 +2332,10 @@ ruu_commit(void)
       if (MD_OP_FLAGS(rs->op) & F_CTRL)
         {
           FMT_dispatch_head = (FMT_dispatch_head + 1) % FMT_size;
-          printf("FMT retire of %d\n", FMT_dispatch_head);
-          int RUU_head_prev = (RUU_head + (RUU_size-1)) % RUU_size;
+
           /* does this RUU entry match the one marked in the retired FMT
              entry? */
+          int RUU_head_prev = (RUU_head + (RUU_size-1)) % RUU_size;
           if (FMT[FMT_dispatch_head].RUU_index != RUU_head_prev)
             printf("mismatch: dispatch_head.RUU_index=%d, RUU_head=%d\n",
                    FMT[FMT_dispatch_head].RUU_index,
@@ -2429,9 +2429,9 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
   RUU_tail = RUU_prev_tail;
   LSQ_tail = LSQ_prev_tail;
 
-  if ((MD_OP_FLAGS(RUU[branch_index].op) & (F_CTRL)) != (F_CTRL)) {
+  /* FIXME_FMT */
+  if ((MD_OP_FLAGS(RUU[branch_index].op) & (F_CTRL)) != (F_CTRL))
     printf("branch_index is not a F_CTRL\n");
-  }
 
   /* traverse to older FMT entry until the mispredicted branch is encountered */
   while (FMT[FMT_dispatch_tail].RUU_index != branch_index)
@@ -2443,13 +2443,7 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 
   /* reset FMT dispatch_tail and fetch pointers to point to the mis-predicted branch */
   // FMT_fetch = (FMT_fetch + (FMT_size-1)) % FMT_size;
-  // FMT_dispatch_tail = (FMT_dispatch_tail + (FMT_size-1)) % FMT_size;
   /* TODO */
-  // if ((FMT[FMT_dispatch_tail].rs - RUU) != RUU_tail) {
-  //   printf("FMT recover: BAD\n");
-  // } else {
-  //   printf("FMT recover: OK\n");
-  // }
 
   /* revert create vector back to last precise create vector state, NOTE:
      this is accomplished by resetting all the copied-on-write bits in the
