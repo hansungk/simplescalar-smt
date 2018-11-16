@@ -358,9 +358,9 @@ struct FMT_entry {
   int RUU_index;      /* RUU_station entry that this branch is in */
   int mispred;        /* is this branch mispredicted? */
   int branch_penalty; /* branch penalty counter */
-  int il1_cnt;        /* L1 I-cache miss counter */
-  int il2_cnt;        /* L1 I-cache miss counter */
-  int itlb_cnt;       /* L1 I-cache miss counter */
+  int il1_count;        /* L1 I-cache miss counter */
+  int il2_count;        /* L1 I-cache miss counter */
+  int itlb_count;       /* L1 I-cache miss counter */
 };
 
 /* FMT table */
@@ -382,7 +382,10 @@ fmt_init(void)
   if (!FMT)
     fatal("out of virtual memory");
 
-  FMT_dispatch_head = FMT_dispatch_tail = 0;
+  /* Dispatch_tail should point to "nothing" initially, because no
+     instruction is fetched yet.  Just set it to wrapped-around -1
+     which is an invalid entry and will be discarded. */
+  FMT_dispatch_head = FMT_dispatch_tail = FMT_size - 1;
   FMT_fetch = 0;
 }
 
@@ -477,6 +480,8 @@ dl1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 	      struct cache_blk_t *blk,	/* ptr to block in upper level */
 	      tick_t now)		/* time of access */
 {
+  printf("dl1c miss\n");
+
   unsigned int lat;
 
   if (cache_dl2)
@@ -513,6 +518,8 @@ dl2_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 	      struct cache_blk_t *blk,	/* ptr to block in upper level */
 	      tick_t now)		/* time of access */
 {
+  printf("dl2c miss\n");
+
   /* this is a miss to the lowest level, so access main memory */
   if (cmd == Read)
     return mem_access_latency(bsize);
@@ -533,11 +540,16 @@ il1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 {
   unsigned int lat;
 
+  /* increment appropriate FMT counter */
+  printf("il1c miss, incrementing on FMT_fetch=%d\n", FMT_fetch);
+  FMT[FMT_fetch].il1_count++;
+
 if (cache_il2)
     {
       /* access next level of inst cache hierarchy */
       lat = cache_access(cache_il2, cmd, baddr, NULL, bsize,
 			 /* now */now, /* pudata */NULL, /* repl addr */NULL);
+      printf("il1c lat=%d\n", lat);
       if (cmd == Read)
 	return lat;
       else
@@ -561,11 +573,16 @@ il2_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 	      struct cache_blk_t *blk,	/* ptr to block in upper level */
 	      tick_t now)		/* time of access */
 {
+  /* increment appropriate FMT counter */
+  printf("il1c miss, incrementing on FMT_fetch=%d\n", FMT_fetch);
+  FMT[FMT_fetch].il2_count++;
+
   /* this is a miss to the lowest level, so access main memory */
   if (cmd == Read)
     return mem_access_latency(bsize);
   else
     panic("writes to instruction memory not supported");
+
 }
 
 
@@ -588,6 +605,9 @@ itlb_access_fn(enum mem_cmd cmd,	/* access cmd, Read or Write */
 
   /* fake translation, for now... */
   *phy_page_ptr = 0;
+
+  /* increment appropriate FMT counter */
+  FMT[FMT_fetch].itlb_count++;
 
   /* return tlb miss latency */
   return tlb_miss_lat;
@@ -2433,17 +2453,17 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
   /* traverse to older FMT entry until the mispredicted branch is encountered */
   while (FMT[FMT_dispatch_tail].RUU_index != branch_index)
     {
-      // printf("rolling back at FMT[%d], RUU_index=%d, branch_index=%d\n",
-      //        FMT_dispatch_tail, FMT[FMT_dispatch_tail].RUU_index, branch_index);
+      printf("rolling back at FMT[%d], RUU_index=%d, branch_index=%d\n",
+             FMT_dispatch_tail, FMT[FMT_dispatch_tail].RUU_index, branch_index);
       FMT_dispatch_tail = (FMT_dispatch_tail + (FMT_size-1)) % FMT_size;
     }
 
   /* mark the mispredicted FMT entry as such */
   FMT[FMT_dispatch_tail].mispred = 1;
 
-  /* restore fetch pointer to dispatch tail pointer
+  /* restore fetch pointer next to the dispatch tail pointer
      (FIXME_FMT is this right?) */
-  FMT_fetch = (FMT_dispatch_tail) % FMT_size;
+  FMT_fetch = (FMT_dispatch_tail + 1) % FMT_size;
 
   /* revert create vector back to last precise create vector state, NOTE:
      this is accomplished by resetting all the copied-on-write bits in the
@@ -4031,13 +4051,12 @@ ruu_dispatch(void)
 	  rs->ptrace_seq = pseq;
 
           /* if this is a branch, allocate a new FMT entry for it */
-          if ((MD_OP_FLAGS(op) & (F_CTRL)) == (F_CTRL)) /* FIXME_FMT */
+          if (MD_OP_FLAGS(op) & F_CTRL) /* FIXME_FMT */
             {
-              /* increase first, because dispatch_tail should point to the
-                 currently dispatched branch, not the next branch */
+              /* increase first, because dispatch_tail should point to
+                 the entry of the dispatched branch itself */
               FMT_dispatch_tail = (FMT_dispatch_tail + 1) % FMT_size;
               FMT[FMT_dispatch_tail].RUU_index = RUU_tail;
-              // FMT[FMT_dispatch_tail].branch_penalty += mispred; /* TODO */
             }
 
 	  /* split ld/st's into two operations: eff addr comp + mem access */
@@ -4448,16 +4467,17 @@ ruu_fetch(void)
       fetch_tail = (fetch_tail + 1) & (ruu_ifq_size - 1);
       fetch_num++;
 
-      /* advance FMT fetch pointer if this is a branch instruction */
+      /* advance FMT fetch pointer if this is a branch instruction.
+       * this is done when all miss latency finishes */
       if (MD_OP_FLAGS(op) & F_CTRL)
         {
           FMT_fetch = (FMT_fetch + 1) % FMT_size;
           FMT[FMT_fetch].RUU_index = 0;
           FMT[FMT_fetch].mispred = 0;
           FMT[FMT_fetch].branch_penalty = 0;
-          FMT[FMT_fetch].il1_cnt = 0;
-          FMT[FMT_fetch].il2_cnt = 0;
-          FMT[FMT_fetch].itlb_cnt = 0;
+          FMT[FMT_fetch].il1_count = 0;
+          FMT[FMT_fetch].il2_count = 0;
+          FMT[FMT_fetch].itlb_count = 0;
         }
     }
 }
