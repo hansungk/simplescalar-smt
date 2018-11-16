@@ -1,3 +1,4 @@
+/* -*- c-file-style: "gnu" -*- */
 /* sim-outorder.c - sample out-of-order issue perf simulator implementation */
 
 /* SimpleScalar(TM) Tool Suite
@@ -369,6 +370,16 @@ static int FMT_dispatch_head; /* FMT dispatch head entry */
 static int FMT_dispatch_tail; /* FMT dispatch tail entry */
 static int FMT_fetch;         /* FMT fetch entry */
 
+/* FMT global CPI component cycles */
+static counter_t FMT_global_il1_count = 0;
+static counter_t FMT_global_il2_count = 0;
+static counter_t FMT_global_itlb_count = 0;
+static counter_t FMT_global_branch_penalty = 0;
+
+/* if 1, increment global branch penalty counter every cycle until a
+   new instruction enters RUU */
+static int FMT_no_dispatch_after_mispred = 0;
+
 /* FMT size.  It must have as many rows as the processor supports
    outstanding branches.  As an upper bound, set it to RUU_size
    (FIXME). */
@@ -540,16 +551,13 @@ il1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 {
   unsigned int lat;
 
-  /* increment appropriate FMT counter */
-  printf("il1c miss, incrementing on FMT_fetch=%d\n", FMT_fetch);
-  FMT[FMT_fetch].il1_count++;
-
 if (cache_il2)
     {
       /* access next level of inst cache hierarchy */
       lat = cache_access(cache_il2, cmd, baddr, NULL, bsize,
 			 /* now */now, /* pudata */NULL, /* repl addr */NULL);
-      printf("il1c lat=%d\n", lat);
+      printf("il1c miss on [%d], lat=%d\n", FMT_fetch, lat);
+
       if (cmd == Read)
 	return lat;
       else
@@ -573,13 +581,16 @@ il2_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 	      struct cache_blk_t *blk,	/* ptr to block in upper level */
 	      tick_t now)		/* time of access */
 {
-  /* increment appropriate FMT counter */
-  printf("il1c miss, incrementing on FMT_fetch=%d\n", FMT_fetch);
-  FMT[FMT_fetch].il2_count++;
-
   /* this is a miss to the lowest level, so access main memory */
   if (cmd == Read)
-    return mem_access_latency(bsize);
+    {
+      int lat = mem_access_latency(bsize);
+      /* increment FMT counter.  assumes il2 miss latency always
+         overshadows itlb miss latency */
+      printf("il2c miss on [%d], lat=%d\n", FMT_fetch, lat);
+      FMT[FMT_fetch].il2_count += lat - 1;
+      return lat;
+    }
   else
     panic("writes to instruction memory not supported");
 
@@ -598,6 +609,8 @@ itlb_access_fn(enum mem_cmd cmd,	/* access cmd, Read or Write */
 	       struct cache_blk_t *blk,	/* ptr to block in upper level */
 	       tick_t now)		/* time of access */
 {
+  printf("itlb miss on [%d], lat=%d\n", FMT_fetch, tlb_miss_lat);
+
   md_addr_t *phy_page_ptr = (md_addr_t *)blk->user_data;
 
   /* no real memory access, however, should have user data space attached */
@@ -605,9 +618,6 @@ itlb_access_fn(enum mem_cmd cmd,	/* access cmd, Read or Write */
 
   /* fake translation, for now... */
   *phy_page_ptr = 0;
-
-  /* increment appropriate FMT counter */
-  FMT[FMT_fetch].itlb_count++;
 
   /* return tlb miss latency */
   return tlb_miss_lat;
@@ -2197,6 +2207,33 @@ cv_dump(FILE *stream)				/* output stream */
     }
 }
 
+/* add local FMT counters onto corresponding global counters */
+static void
+fmt_commit(void)
+{
+  FMT_global_il1_count += FMT[FMT_dispatch_head].il1_count;
+  FMT_global_il2_count += FMT[FMT_dispatch_head].il2_count;
+  FMT_global_itlb_count += FMT[FMT_dispatch_head].itlb_count;
+  if (FMT[FMT_dispatch_head].mispred)
+    {
+      FMT_global_branch_penalty += FMT[FMT_dispatch_head].branch_penalty;
+      /* keep incrementing until new instruction enters RUU */
+      FMT_no_dispatch_after_mispred = 1;
+    }
+
+  printf("FMT retire [%d]: il1_count=%d, il2_count=%d, itlb_count=%d, mispred=%d, branch_penalty=%d\n",
+         FMT_dispatch_head,
+         FMT[FMT_dispatch_head].il1_count,
+         FMT[FMT_dispatch_head].il2_count,
+         FMT[FMT_dispatch_head].itlb_count,
+         FMT[FMT_dispatch_head].mispred,
+         FMT[FMT_dispatch_head].branch_penalty);
+  printf("FMT global counters: il1_count=%d, il2_count=%d, itlb_count=%d, branch_penalty=%d\n",
+         FMT_global_il1_count,
+         FMT_global_il2_count,
+         FMT_global_itlb_count,
+         FMT_global_branch_penalty);
+}
 
 /*
  *  RUU_COMMIT() - instruction retirement pipeline stage
@@ -2347,19 +2384,21 @@ ruu_commit(void)
 	    panic ("retired instruction has odeps\n");
         }
 
-      /* If this is a branch instruction, advance FMT dispatch_head
-         pointer to retire this branch from FMT */
+      /* if the retired instruction was a branch, advance FMT
+         dispatch_head and update global counters */
       if (MD_OP_FLAGS(rs->op) & F_CTRL)
         {
           FMT_dispatch_head = (FMT_dispatch_head + 1) % FMT_size;
 
-          /* does this RUU entry match the one marked in the retired FMT
-             entry? */
-          int RUU_head_prev = (RUU_head + (RUU_size-1)) % RUU_size;
-          if (FMT[FMT_dispatch_head].RUU_index != RUU_head_prev)
-            panic("RUU/FMT mismatch: dispatch_head.RUU_index=%d, RUU_head=%d\n",
+          /* sanity check: does the RUU index of the FMT dispatch head
+             entry match the retired instruction? */
+          int RUU_retired = (RUU_head + (RUU_size-1)) % RUU_size;
+          if (FMT[FMT_dispatch_head].RUU_index != RUU_retired)
+            panic("RUU/FMT mismatch: dispatch_head.RUU_index=%d, RUU_retired=%d\n",
                   FMT[FMT_dispatch_head].RUU_index,
-                  RUU_head_prev);
+                  RUU_retired);
+
+          fmt_commit();
         }
     }
 }
@@ -2453,8 +2492,8 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
   /* traverse to older FMT entry until the mispredicted branch is encountered */
   while (FMT[FMT_dispatch_tail].RUU_index != branch_index)
     {
-      printf("rolling back at FMT[%d], RUU_index=%d, branch_index=%d\n",
-             FMT_dispatch_tail, FMT[FMT_dispatch_tail].RUU_index, branch_index);
+        /* printf("rolling back at FMT[%d], RUU_index=%d, branch_index=%d\n",
+           FMT_dispatch_tail, FMT[FMT_dispatch_tail].RUU_index, branch_index); */
       FMT_dispatch_tail = (FMT_dispatch_tail + (FMT_size-1)) % FMT_size;
     }
 
@@ -3819,7 +3858,6 @@ ruu_dispatch(void)
   int is_write;				/* store? */
   int made_check;			/* used to ensure DLite entry */
   int br_taken, br_pred_taken;		/* if br, taken?  predicted taken? */
-  int mispred = 0;			/* mispredicted? */
   int fetch_redirected = FALSE;
   byte_t temp_byte = 0;			/* temp variable for spec mem access */
   half_t temp_half = 0;			/* " ditto " */
@@ -4008,9 +4046,6 @@ ruu_dispatch(void)
 	      misfetch_only_count++;
 	    }
           }
-
-          /* mark misprediction for FMT entry allocation */
-          mispred = 1; /* FIXME_FMT */
 	}
 
       /* is this a NOP */
@@ -4049,6 +4084,10 @@ ruu_dispatch(void)
 	  rs->seq = ++inst_seq;
 	  rs->queued = rs->issued = rs->completed = FALSE;
 	  rs->ptrace_seq = pseq;
+
+          /* A new right-path instruction has entered RUU, stop
+             incrementing global branch penalty counter */
+          FMT_no_dispatch_after_mispred = 0;
 
           /* if this is a branch, allocate a new FMT entry for it */
           if (MD_OP_FLAGS(op) & F_CTRL) /* FIXME_FMT */
@@ -4252,6 +4291,11 @@ ruu_dispatch(void)
 	dlite_main(regs.regs_PC, pred_PC, sim_cycle, &regs, mem);
     }
 
+  /* if no new right-path instruction has entered RUU after the last
+     mispred branch, increment FMT global branch penalty counter */
+  if (FMT_no_dispatch_after_mispred)
+    FMT_global_branch_penalty++;
+
   /* need to enter DLite at least once per cycle */
   if (!made_check)
     {
@@ -4387,6 +4431,16 @@ ruu_fetch(void)
 	    {
 	      /* I-cache miss, block fetch until it is resolved */
 	      ruu_fetch_issue_delay += lat - 1;
+
+              /* Increase corresponding FMT local counter. Must
+                 consider overlapping of I-cache and I-TLB miss as
+                 they are accessed in parallel.  il2_count is handled
+                 in il2_access_fn. */
+              if (last_inst_tmissed && lat == tlb_lat)
+                FMT[FMT_fetch].itlb_count += lat - 1;
+              else
+                FMT[FMT_fetch].il1_count += lat - 1;
+
 	      break;
 	    }
 	  /* else, I-cache/I-TLB hit */
@@ -4563,6 +4617,22 @@ simoo_mstate_obj(FILE *stream,			/* output stream */
   return NULL;
 }
 
+/* increment branch penalty counter of all entries between
+   FMT_dispatch_head and FMT_dispatch_pointer */
+static void
+fmt_branch_penalty(void)
+{
+  /* if RUU is full, this will be counted as long backend miss */
+  if (RUU_num == RUU_size)
+    return;
+
+  /* NOTE since FMT_dispatch_head points to the last _committed_
+     entry, it should be excluded from the loop. */
+  for (int i = FMT_dispatch_tail;
+       i != FMT_dispatch_head;
+       i = (i + (FMT_size-1)) % FMT_size)
+    FMT[i].branch_penalty++;
+}
 
 /* start simulation, program loaded, processor precise state initialized */
 void
@@ -4739,6 +4809,10 @@ sim_main(void)
       RUU_fcount += ((RUU_num == RUU_size) ? 1 : 0);
       LSQ_count += LSQ_num;
       LSQ_fcount += ((LSQ_num == LSQ_size) ? 1 : 0);
+
+      /* update FMT branch penalty fields
+         FIXME_FMT: at the beginning or end? */
+      fmt_branch_penalty();
 
       /* go to next cycle */
       sim_cycle++;
