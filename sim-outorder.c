@@ -2337,9 +2337,9 @@ ruu_commit(void)
              entry? */
           int RUU_head_prev = (RUU_head + (RUU_size-1)) % RUU_size;
           if (FMT[FMT_dispatch_head].RUU_index != RUU_head_prev)
-            printf("mismatch: dispatch_head.RUU_index=%d, RUU_head=%d\n",
-                   FMT[FMT_dispatch_head].RUU_index,
-                   RUU_head_prev);
+            panic("RUU/FMT mismatch: dispatch_head.RUU_index=%d, RUU_head=%d\n",
+                  FMT[FMT_dispatch_head].RUU_index,
+                  RUU_head_prev);
         }
     }
 }
@@ -2356,8 +2356,6 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 {
   int i, RUU_index = RUU_tail, LSQ_index = LSQ_tail;
   int RUU_prev_tail = RUU_tail, LSQ_prev_tail = LSQ_tail;
-  int FMT_dispatch_index = FMT_dispatch_tail, FMT_fetch_index = FMT_fetch;
-  int FMT_prev_dispatch_tail = FMT_dispatch_tail, FMT_prev_fetch = FMT_fetch;
 
   /* recover from the tail of the RUU towards the head until the branch index
      is reached, this direction ensures that the LSQ can be synchronized with
@@ -2429,21 +2427,23 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
   RUU_tail = RUU_prev_tail;
   LSQ_tail = LSQ_prev_tail;
 
-  /* FIXME_FMT */
-  if ((MD_OP_FLAGS(RUU[branch_index].op) & (F_CTRL)) != (F_CTRL))
-    printf("branch_index is not a F_CTRL\n");
+  if (!(MD_OP_FLAGS(RUU[branch_index].op) & F_CTRL))
+    panic("branch_index is not a F_CTRL op?\n");
 
   /* traverse to older FMT entry until the mispredicted branch is encountered */
   while (FMT[FMT_dispatch_tail].RUU_index != branch_index)
     {
-      printf("rolling back at FMT[%d], RUU_index=%d, branch_index=%d\n",
-             FMT_dispatch_tail, FMT[FMT_dispatch_tail].RUU_index, branch_index);
+      // printf("rolling back at FMT[%d], RUU_index=%d, branch_index=%d\n",
+      //        FMT_dispatch_tail, FMT[FMT_dispatch_tail].RUU_index, branch_index);
       FMT_dispatch_tail = (FMT_dispatch_tail + (FMT_size-1)) % FMT_size;
     }
 
-  /* reset FMT dispatch_tail and fetch pointers to point to the mis-predicted branch */
-  // FMT_fetch = (FMT_fetch + (FMT_size-1)) % FMT_size;
-  /* TODO */
+  /* mark the mispredicted FMT entry as such */
+  FMT[FMT_dispatch_tail].mispred = 1;
+
+  /* restore fetch pointer to dispatch tail pointer
+     (FIXME_FMT is this right?) */
+  FMT_fetch = (FMT_dispatch_tail) % FMT_size;
 
   /* revert create vector back to last precise create vector state, NOTE:
      this is accomplished by resetting all the copied-on-write bits in the
@@ -4037,8 +4037,7 @@ ruu_dispatch(void)
                  currently dispatched branch, not the next branch */
               FMT_dispatch_tail = (FMT_dispatch_tail + 1) % FMT_size;
               FMT[FMT_dispatch_tail].RUU_index = RUU_tail;
-              FMT[FMT_dispatch_tail].mispred = mispred;
-              FMT[FMT_dispatch_tail].branch_penalty += mispred; /* TODO */
+              // FMT[FMT_dispatch_tail].branch_penalty += mispred; /* TODO */
             }
 
 	  /* split ld/st's into two operations: eff addr comp + mem access */
@@ -4453,7 +4452,7 @@ ruu_fetch(void)
       if (MD_OP_FLAGS(op) & F_CTRL)
         {
           FMT_fetch = (FMT_fetch + 1) % FMT_size;
-          // FMT[FMT_fetch].RUU_index = 0; // FIXME_FMT
+          FMT[FMT_fetch].RUU_index = 0;
           FMT[FMT_fetch].mispred = 0;
           FMT[FMT_fetch].branch_penalty = 0;
           FMT[FMT_fetch].il1_cnt = 0;
