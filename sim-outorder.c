@@ -355,12 +355,12 @@ static counter_t sim_invalid_addrs;
 /* Represents an entry for the FMT.  Tracks and stores frontend miss
    informations of a single branch. */
 struct FMT_entry {
-  struct RUU_station *rs; /* RUU_station this branch is in */
-  int mispred;            /* is this branch mispredicted? */
-  int branch_penalty;     /* branch penalty counter */
-  int il1_cnt;      /* L1 I-cache miss counter */
-  int il2_cnt;      /* L1 I-cache miss counter */
-  int itlb_cnt;           /* L1 I-cache miss counter */
+  int RUU_index;      /* RUU_station entry that this branch is in */
+  int mispred;        /* is this branch mispredicted? */
+  int branch_penalty; /* branch penalty counter */
+  int il1_cnt;        /* L1 I-cache miss counter */
+  int il2_cnt;        /* L1 I-cache miss counter */
+  int itlb_cnt;       /* L1 I-cache miss counter */
 };
 
 /* FMT table */
@@ -382,7 +382,8 @@ fmt_init(void)
   if (!FMT)
     fatal("out of virtual memory");
 
-  FMT_dispatch_head = FMT_dispatch_tail = FMT_fetch = 0;
+  FMT_dispatch_head = FMT_dispatch_tail = 0;
+  FMT_fetch = 0;
 }
 
 /*
@@ -2325,6 +2326,21 @@ ruu_commit(void)
 	  if (rs->odep_list[i])
 	    panic ("retired instruction has odeps\n");
         }
+
+      /* If this is a branch instruction, advance FMT dispatch_head
+         pointer to retire this branch from FMT */
+      if (MD_OP_FLAGS(rs->op) & F_CTRL)
+        {
+          FMT_dispatch_head = (FMT_dispatch_head + 1) % FMT_size;
+          printf("FMT retire of %d\n", FMT_dispatch_head);
+          int RUU_head_prev = (RUU_head + (RUU_size-1)) % RUU_size;
+          /* does this RUU entry match the one marked in the retired FMT
+             entry? */
+          if (FMT[FMT_dispatch_head].RUU_index != RUU_head_prev)
+            printf("mismatch: dispatch_head.RUU_index=%d, RUU_head=%d\n",
+                   FMT[FMT_dispatch_head].RUU_index,
+                   RUU_head_prev);
+        }
     }
 }
 
@@ -2340,6 +2356,8 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 {
   int i, RUU_index = RUU_tail, LSQ_index = LSQ_tail;
   int RUU_prev_tail = RUU_tail, LSQ_prev_tail = LSQ_tail;
+  int FMT_dispatch_index = FMT_dispatch_tail, FMT_fetch_index = FMT_fetch;
+  int FMT_prev_dispatch_tail = FMT_dispatch_tail, FMT_prev_fetch = FMT_fetch;
 
   /* recover from the tail of the RUU towards the head until the branch index
      is reached, this direction ensures that the LSQ can be synchronized with
@@ -2410,6 +2428,28 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
   /* reset head/tail pointers to point to the mis-predicted branch */
   RUU_tail = RUU_prev_tail;
   LSQ_tail = LSQ_prev_tail;
+
+  if ((MD_OP_FLAGS(RUU[branch_index].op) & (F_CTRL)) != (F_CTRL)) {
+    printf("branch_index is not a F_CTRL\n");
+  }
+
+  /* traverse to older FMT entry until the mispredicted branch is encountered */
+  while (FMT[FMT_dispatch_tail].RUU_index != branch_index)
+    {
+      printf("rolling back at FMT[%d], RUU_index=%d, branch_index=%d\n",
+             FMT_dispatch_tail, FMT[FMT_dispatch_tail].RUU_index, branch_index);
+      FMT_dispatch_tail = (FMT_dispatch_tail + (FMT_size-1)) % FMT_size;
+    }
+
+  /* reset FMT dispatch_tail and fetch pointers to point to the mis-predicted branch */
+  // FMT_fetch = (FMT_fetch + (FMT_size-1)) % FMT_size;
+  // FMT_dispatch_tail = (FMT_dispatch_tail + (FMT_size-1)) % FMT_size;
+  /* TODO */
+  // if ((FMT[FMT_dispatch_tail].rs - RUU) != RUU_tail) {
+  //   printf("FMT recover: BAD\n");
+  // } else {
+  //   printf("FMT recover: OK\n");
+  // }
 
   /* revert create vector back to last precise create vector state, NOTE:
      this is accomplished by resetting all the copied-on-write bits in the
@@ -3765,6 +3805,7 @@ ruu_dispatch(void)
   int is_write;				/* store? */
   int made_check;			/* used to ensure DLite entry */
   int br_taken, br_pred_taken;		/* if br, taken?  predicted taken? */
+  int mispred = 0;			/* mispredicted? */
   int fetch_redirected = FALSE;
   byte_t temp_byte = 0;			/* temp variable for spec mem access */
   half_t temp_half = 0;			/* " ditto " */
@@ -3953,6 +3994,9 @@ ruu_dispatch(void)
 	      misfetch_only_count++;
 	    }
           }
+
+          /* mark misprediction for FMT entry allocation */
+          mispred = 1; /* FIXME_FMT */
 	}
 
       /* is this a NOP */
@@ -3991,6 +4035,17 @@ ruu_dispatch(void)
 	  rs->seq = ++inst_seq;
 	  rs->queued = rs->issued = rs->completed = FALSE;
 	  rs->ptrace_seq = pseq;
+
+          /* if this is a branch, allocate a new FMT entry for it */
+          if ((MD_OP_FLAGS(op) & (F_CTRL)) == (F_CTRL)) /* FIXME_FMT */
+            {
+              /* increase first, because dispatch_tail should point to the
+                 currently dispatched branch, not the next branch */
+              FMT_dispatch_tail = (FMT_dispatch_tail + 1) % FMT_size;
+              FMT[FMT_dispatch_tail].RUU_index = RUU_tail;
+              FMT[FMT_dispatch_tail].mispred = mispred;
+              FMT[FMT_dispatch_tail].branch_penalty += mispred; /* TODO */
+            }
 
 	  /* split ld/st's into two operations: eff addr comp + mem access */
 	  if (MD_OP_FLAGS(op) & F_MEM)
@@ -4400,16 +4455,17 @@ ruu_fetch(void)
       fetch_tail = (fetch_tail + 1) & (ruu_ifq_size - 1);
       fetch_num++;
 
-      /* install into FMT if this is a branch instruction */
-      if (MD_OP_FLAGS(op) & F_CTRL) {
-        FMT[FMT_fetch].rs = NULL;
-        FMT[FMT_fetch].mispred = 0;
-        FMT[FMT_fetch].branch_penalty = 0;
-        FMT[FMT_fetch].il1_cnt = 0;
-        FMT[FMT_fetch].il2_cnt = 0;
-        FMT[FMT_fetch].itlb_cnt = 0;
-        FMT_fetch = (FMT_fetch + 1) % FMT_size;
-      }
+      /* advance FMT fetch pointer if this is a branch instruction */
+      if (MD_OP_FLAGS(op) & F_CTRL)
+        {
+          FMT_fetch = (FMT_fetch + 1) % FMT_size;
+          // FMT[FMT_fetch].RUU_index = 0; // FIXME_FMT
+          FMT[FMT_fetch].mispred = 0;
+          FMT[FMT_fetch].branch_penalty = 0;
+          FMT[FMT_fetch].il1_cnt = 0;
+          FMT[FMT_fetch].il2_cnt = 0;
+          FMT[FMT_fetch].itlb_cnt = 0;
+        }
     }
 }
 
@@ -4673,6 +4729,8 @@ sim_main(void)
 
       /* go to next cycle */
       sim_cycle++;
+
+      printf("FMT_dispatch_head=%d, FMT_dispatch_tail=%d, FMT_fetch=%d\n", FMT_dispatch_head, FMT_dispatch_tail, FMT_fetch);
 
       /* finish early? */
       if (max_insts && sim_num_insn >= max_insts)

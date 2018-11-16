@@ -7,6 +7,10 @@
 
 ** I-cache/I-TLB misses
 ** Branch misses
+- recover_inst is always branch instruction
+  - they're all F_CTRL
+  - but SOME of them are F_DIRJMP as well
+- Detected in ruu_dispatch, handled in ruu_writeback (via ruu_recover)
 
 Q.
 - FMT free()?
