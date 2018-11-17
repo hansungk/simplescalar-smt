@@ -413,8 +413,10 @@ fmt_dumpent(struct FMT_entry *fe,		/* ptr to RUU station */
   if (!stream)
     stream = stderr;
 
-  fprintf(stream, "idx: %2d: mispred: %d, branch_penalty=%d\n",
-          index, fe->mispred, fe->branch_penalty);
+  fprintf(stream, "idx: %2d: RUU_index: %d\n",
+          index, fe->RUU_index);
+  fprintf(stream, "         mispred: %d, branch_penalty=%d\n",
+          fe->mispred, fe->branch_penalty);
   fprintf(stream, "         il1_count=%d, il2_count=%d, itlb_count=%d\n",
           fe->il1_count, fe->il2_count, fe->itlb_count);
 }
@@ -433,7 +435,7 @@ fmt_dump(FILE *stream)
   fprintf(stream, "FMT_dispatch_head: %d, FMT_dispatch_tail: %d, FMT_fetch: %d\n", FMT_dispatch_head, FMT_dispatch_tail, FMT_fetch);
   fprintf(stream, "FMT_num: not yet\n");
 
-  head = FMT_dispatch_head;
+  head = (FMT_dispatch_head + 1) % FMT_size;
   while (head != (FMT_fetch + 1) % FMT_size)
     {
       fe = &FMT[head];
@@ -594,7 +596,6 @@ if (cache_il2)
       /* access next level of inst cache hierarchy */
       lat = cache_access(cache_il2, cmd, baddr, NULL, bsize,
 			 /* now */now, /* pudata */NULL, /* repl addr */NULL);
-      printf("il1c miss on FMT[%d], lat=%d\n", FMT_fetch, lat);
 
       if (cmd == Read)
 	return lat;
@@ -621,14 +622,7 @@ il2_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 {
   /* this is a miss to the lowest level, so access main memory */
   if (cmd == Read)
-    {
-      int lat = mem_access_latency(bsize);
-      /* increment FMT counter.  assumes il2 miss latency always
-         overshadows itlb miss latency */
-      printf("il2c miss on FMT[%d], lat=%d\n", FMT_fetch, lat);
-      FMT[FMT_fetch].il2_count += lat - 1;
-      return lat;
-    }
+    return mem_access_latency(bsize);
   else
     panic("writes to instruction memory not supported");
 
@@ -647,8 +641,6 @@ itlb_access_fn(enum mem_cmd cmd,	/* access cmd, Read or Write */
 	       struct cache_blk_t *blk,	/* ptr to block in upper level */
 	       tick_t now)		/* time of access */
 {
-  printf("itlb miss on FMT[%d], lat=%d\n", FMT_fetch, tlb_miss_lat);
-
   md_addr_t *phy_page_ptr = (md_addr_t *)blk->user_data;
 
   /* no real memory access, however, should have user data space attached */
@@ -2270,6 +2262,7 @@ fmt_commit(void)
       FMT_no_dispatch_after_mispred = 1;
     }
 
+  /*
   printf("FMT retire [%d]: il1_count=%d, il2_count=%d, itlb_count=%d, mispred=%d, branch_penalty=%d\n",
          FMT_dispatch_head,
          FMT[FMT_dispatch_head].il1_count,
@@ -2277,14 +2270,7 @@ fmt_commit(void)
          FMT[FMT_dispatch_head].itlb_count,
          FMT[FMT_dispatch_head].mispred,
          FMT[FMT_dispatch_head].branch_penalty);
-  printf("FMT global counters: il1_count=%ld, il2_count=%ld, itlb_count=%ld, branch_penalty=%ld, dl1_count=%ld, dl2_count=%ld, dtlb_count=%ld\n",
-         FMT_global_il1_count,
-         FMT_global_il2_count,
-         FMT_global_itlb_count,
-         FMT_global_branch_penalty,
-         FMT_global_dl1_count,
-         FMT_global_dl2_count,
-         FMT_global_dtlb_count);
+  */
 }
 
 /*
@@ -2561,7 +2547,7 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
   FMT_fetch = (FMT_dispatch_tail + 1) % FMT_size;
   FMT[FMT_fetch] = (const struct FMT_entry){0};
 
-  printf("FMT recovery, new FMT_dispatch_tail=%d, FMT_fetch=%d\n", FMT_dispatch_tail, FMT_fetch);
+  printf("FMT recovery: FMT_dispatch_tail=%d, FMT_fetch=%d\n", FMT_dispatch_tail, FMT_fetch);
 
   /* revert create vector back to last precise create vector state, NOTE:
      this is accomplished by resetting all the copied-on-write bits in the
@@ -2949,19 +2935,19 @@ ruu_issue(void)
                                     {
                                       if (load_lat > cache_dl2_lat)
                                         {
-                                          printf("load dl2c miss on LSQ[%d], lat=%d, cache_dl2_lat=%d\n", rs - LSQ, load_lat, cache_dl2_lat);
+                                          printf("LSQ[%d] dl2c miss, lat=%d, cache_dl2_lat=%d\n", rs - LSQ, load_lat, cache_dl2_lat);
                                           rs->miss_level = DL2_MISS;
                                         }
                                       else
                                         {
-                                          printf("load dl1c miss on LSQ[%d], lat=%d, cache_dl1_lat=%d\n", rs - LSQ, load_lat, cache_dl1_lat);
+                                          printf("LSQ[%d] dl1c miss, lat=%d, cache_dl1_lat=%d\n", rs - LSQ, load_lat, cache_dl1_lat);
                                           rs->miss_level = DL1_MISS;
                                         }
                                       events |= PEV_CACHEMISS;
                                     }
                                   else
                                     {
-                                      printf("load dl1c hit on LSQ[%d], lat=%d, cache_dl1_lat=%d\n", rs - LSQ, load_lat, cache_dl1_lat);
+                                      printf("LSQ[%d] dl1c hit, lat=%d, cache_dl1_lat=%d\n", rs - LSQ, load_lat, cache_dl1_lat);
                                     }
 				}
 			      else
@@ -4521,10 +4507,24 @@ ruu_fetch(void)
                  consider overlapping of I-cache and I-TLB miss as
                  they are accessed in parallel.  il2_count is handled
                  in il2_access_fn. */
+              /* tlb miss? */
               if (last_inst_tmissed && lat == tlb_lat)
-                FMT[FMT_fetch].itlb_count += lat - 1;
+                {
+                  printf("FMT[%d] local itlb miss, lat=%d\n", FMT_fetch, lat);
+                  FMT[FMT_fetch].itlb_count += lat - 1;
+                }
+              /* il2 miss? */
+              else if (lat > cache_il2_lat)
+                {
+                  printf("FMT[%d] local il2c miss, lat=%d\n", FMT_fetch, lat);
+                  FMT[FMT_fetch].il2_count += lat - 1;
+                }
+              /* il1 miss? */
               else
-                FMT[FMT_fetch].il1_count += lat - 1;
+                {
+                  printf("FMT[%d] local il1c miss, lat=%d\n", FMT_fetch, lat);
+                  FMT[FMT_fetch].il1_count += lat - 1;
+                }
 
 	      break;
 	    }
@@ -4702,10 +4702,6 @@ simoo_mstate_obj(FILE *stream,			/* output stream */
 static void
 fmt_branch_penalty(void)
 {
-  /* if RUU is full, this will be counted as long backend miss */
-  if (RUU_num == RUU_size)
-    return;
-
   /* NOTE since FMT_dispatch_head points to the last _committed_
      entry, it should be excluded from the loop. */
   for (int i = FMT_dispatch_tail;
@@ -4716,7 +4712,7 @@ fmt_branch_penalty(void)
 
 /* update FMT counters on long backend misses and long latency
    stalls */
-static void
+static int
 fmt_long_backend_miss(void)
 {
   /* memory operations are split into RUU (addq) and LSQ (ld/st), so
@@ -4726,6 +4722,7 @@ fmt_long_backend_miss(void)
       /* LSQ blocked? */LSQ[LSQ_head].completed == FALSE &&
       /* LSQ head matches RUU? */LSQ[LSQ_head].PC == RUU[RUU_head].PC)
     {
+      printf("FMT long backend miss\n");
       switch (LSQ[LSQ_head].miss_level)
         {
         case DL1_MISS:
@@ -4738,12 +4735,14 @@ fmt_long_backend_miss(void)
           FMT_global_dtlb_count++;
           break;
         case NO_MISS:
-          /* dl1 cache hit */
+          /* RUU blocked by dl1 cache hit latency; this is not counted */
           break;
         default:
           panic("unknown miss_level");
         }
+      return 1;
     }
+  return 0;
 }
 
 /* start simulation, program loaded, processor precise state initialized */
@@ -4922,21 +4921,32 @@ sim_main(void)
       LSQ_count += LSQ_num;
       LSQ_fcount += ((LSQ_num == LSQ_size) ? 1 : 0);
 
-      /* update FMT branch penalty fields */
-      fmt_branch_penalty();
-
       /* update FMT for long backend misses and latency stalls, i.e. D1,
          D2 and D-TLB miss */
-      fmt_long_backend_miss();
+      if (!fmt_long_backend_miss())
+        {
+          /* if it's not a long backend miss, update FMT branch
+             penalty fields */
+          fmt_branch_penalty();
+        }
 
       lsq_dump(stdout);
-      ruu_dump(stdout);
+      // ruu_dump(stdout);
       fmt_dump(stdout);
 
       printf("[%ld] RUU_num=%d, RUU_head=%d, RUU_tail=%d, FMT_dispatch_head=%d, FMT_dispatch_tail=%d, FMT_fetch=%d\n",
              sim_cycle, RUU_num, RUU_head, RUU_tail, FMT_dispatch_head, FMT_dispatch_tail, FMT_fetch);
 
-      /* go to next cycle */
+      printf("FMT global counters: il1_count=%ld, il2_count=%ld, itlb_count=%ld, branch_penalty=%ld, dl1_count=%ld, dl2_count=%ld, dtlb_count=%ld\n",
+             FMT_global_il1_count,
+             FMT_global_il2_count,
+             FMT_global_itlb_count,
+             FMT_global_branch_penalty,
+             FMT_global_dl1_count,
+             FMT_global_dl2_count,
+             FMT_global_dtlb_count);
+
+  /* go to next cycle */
       sim_cycle++;
 
       /* finish early? */
