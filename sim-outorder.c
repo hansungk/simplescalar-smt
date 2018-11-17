@@ -389,6 +389,7 @@ static int FMT_size;
 /* if 1, increment global branch penalty counter every cycle until a
    new instruction enters RUU */
 static int FMT_no_dispatch_after_mispred = 0;
+static int FMT_last_mispred = -1;
 
 /* sFMT: remember PC of the last fetch-blocked instruction in order to
    mark sfmt_icache_itlb_miss bit when dispatching to RUU */
@@ -2636,6 +2637,7 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
   FMT[FMT_dispatch_tail].mispred = 1;
 
   // FMT_no_dispatch_after_mispred = 1; /* FIXME_FMT here? */
+  FMT_last_mispred = FMT_dispatch_tail;
 
   /* restore fetch pointer next to the dispatch tail pointer */
   FMT_fetch = (FMT_dispatch_tail + 1) % FMT_size;
@@ -4256,6 +4258,7 @@ ruu_dispatch(void)
           /* A new right-path instruction has entered RUU, stop
              incrementing global branch penalty counter */
           FMT_no_dispatch_after_mispred = 0;
+          FMT_last_mispred = -1;
 
           /* if this is a branch, allocate a new FMT entry for it */
           if (MD_OP_FLAGS(op) & F_CTRL) /* FIXME_FMT */
@@ -4465,7 +4468,8 @@ ruu_dispatch(void)
 
   /* if no new right-path instruction has entered RUU after the last
      mispred branch, increment FMT global branch penalty counter */
-  if (FMT_no_dispatch_after_mispred)
+  if (FMT_dispatch_head == FMT_last_mispred)
+  // if (FMT_no_dispatch_after_mispred)
     {
       FMT_global_branch_penalty++;
       sFMT_global_branch_penalty++;
@@ -4836,8 +4840,12 @@ fmt_branch_penalty(void)
        i != FMT_dispatch_head;
        i = (i + (FMT_size-1)) % FMT_size)
     {
-      FMT[i].branch_penalty++;
-      FMT[i].sFMT_branch_penalty++;
+      if (!FMT[i].mispred ||
+          i == FMT_last_mispred)
+        {
+          FMT[i].branch_penalty++;
+          FMT[i].sFMT_branch_penalty++;
+        }
     }
 }
 
