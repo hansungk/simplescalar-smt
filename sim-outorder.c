@@ -434,8 +434,8 @@ fmt_dumpent(struct FMT_entry *fe,		/* ptr to RUU station */
 
   fprintf(stream, "idx: %2d: RUU_index: %d\n",
           index, fe->RUU_index);
-  fprintf(stream, "         mispred: %d, branch_penalty=%d\n",
-          fe->mispred, fe->branch_penalty);
+  fprintf(stream, "         mispred: %d, branch_penalty=%d, sFMT_branch_penalty=%d\n",
+          fe->mispred, fe->branch_penalty, fe->sFMT_branch_penalty);
   fprintf(stream, "         il1_count=%d, il2_count=%d, itlb_count=%d\n",
           fe->il1_count, fe->il2_count, fe->itlb_count);
 }
@@ -2292,8 +2292,11 @@ fmt_commit(void)
   if (FMT[FMT_dispatch_head].mispred)
     {
       FMT_global_branch_penalty += FMT[FMT_dispatch_head].branch_penalty;
-      /* keep incrementing until new instruction enters RUU */
-      FMT_no_dispatch_after_mispred = 1;
+      /* if no new right-path instruction has arrived after this
+         branch, keep incrementing until new instruction enters RUU */
+      /* FIXME_FMT set this at branch commit or at resolution? */
+      if ((FMT[FMT_dispatch_head].RUU_index + 1) % RUU_size == RUU_tail)
+        FMT_no_dispatch_after_mispred = 1;
     }
 
   /*
@@ -2626,6 +2629,8 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
 
   /* mark the mispredicted FMT entry as such */
   FMT[FMT_dispatch_tail].mispred = 1;
+
+  // FMT_no_dispatch_after_mispred = 1; /* FIXME_FMT here? */
 
   /* restore fetch pointer next to the dispatch tail pointer */
   FMT_fetch = (FMT_dispatch_tail + 1) % FMT_size;
@@ -4457,6 +4462,7 @@ ruu_dispatch(void)
   if (FMT_no_dispatch_after_mispred)
     {
       FMT_global_branch_penalty++;
+      sFMT_global_branch_penalty++;
       printf("dispatch: no new one after mispred, incrementing global branch_counter\n");
     }
 
@@ -4971,6 +4977,8 @@ sim_main(void)
      to eliminate this/next state synchronization and relaxation problems */
   for (;;)
     {
+      printf("\n[%ld]\n", sim_cycle);
+
       /* RUU/LSQ sanity checks */
       if (RUU_num < LSQ_num)
 	panic("RUU_num < LSQ_num");
@@ -5046,9 +5054,9 @@ sim_main(void)
           fmt_branch_penalty();
         }
 
-      lsq_dump(stdout);
-      // ruu_dump(stdout);
+      // lsq_dump(stdout);
       fmt_dump(stdout);
+      ruu_dump(stdout);
 
       printf("[%ld] RUU_num=%d, RUU_head=%d, RUU_tail=%d, FMT_dispatch_head=%d, FMT_dispatch_tail=%d, FMT_fetch=%d\n",
              sim_cycle, RUU_num, RUU_head, RUU_tail, FMT_dispatch_head, FMT_dispatch_tail, FMT_fetch);
