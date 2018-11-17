@@ -4622,14 +4622,14 @@ ruu_fetch(void)
               /* il2 miss? */
               else if (lat > cache_il2_lat)
                 {
-                  printf("FMT[%d] local il2c miss, lat=%d\n", FMT_fetch, lat);
+                  printf("FMT[%d] local il2c miss, lat=%d, cache_il2_lat=%d\n", FMT_fetch, lat, cache_il2_lat);
                   FMT[FMT_fetch].il2_count += lat - 1;
                   sFMT_local_il2_count += lat - 1;
                 }
               /* il1 miss? */
               else
                 {
-                  printf("FMT[%d] local il1c miss, lat=%d\n", FMT_fetch, lat);
+                  printf("FMT[%d] local il1c miss, lat=%d, cache_il1_lat=%d\n", FMT_fetch, lat, cache_il1_lat);
                   FMT[FMT_fetch].il1_count += lat - 1;
                   sFMT_local_il1_count += lat - 1;
                 }
@@ -4731,11 +4731,14 @@ ruu_fetch(void)
        * this is done when all miss latency finishes */
       if (MD_OP_FLAGS(op) & F_CTRL)
         {
-          if (FMT_num >= FMT_size)
-            panic("no space in FMT!");
-          FMT_fetch = (FMT_fetch + 1) % FMT_size;
-          FMT_num++;
-          FMT[FMT_fetch] = (const struct FMT_entry){0};
+          // if (FMT_num >= FMT_size)
+          //   panic("no space in FMT!");
+          if (FMT_num < FMT_size)
+            {
+              FMT_fetch = (FMT_fetch + 1) % FMT_size;
+              FMT_num++;
+              FMT[FMT_fetch] = (const struct FMT_entry){0};
+            }
         }
     }
   printf("FETCH: fetch_num=%d\n", fetch_num);
