@@ -403,6 +403,45 @@ fmt_init(void)
   FMT_fetch = 0;
 }
 
+/* dump the contents of the FMT */
+static void
+fmt_dumpent(struct FMT_entry *fe,		/* ptr to RUU station */
+	    int index,				/* entry index */
+	    FILE *stream,			/* output stream */
+	    int header)				/* print header? */
+{
+  if (!stream)
+    stream = stderr;
+
+  fprintf(stream, "idx: %2d: mispred: %d, branch_penalty=%d\n",
+          index, fe->mispred, fe->branch_penalty);
+  fprintf(stream, "         il1_count=%d, il2_count=%d, itlb_count=%d\n",
+          fe->il1_count, fe->il2_count, fe->itlb_count);
+}
+
+/* dump the contents of the FMT */
+static void
+fmt_dump(FILE *stream)
+{
+  int num, head;
+  struct FMT_entry *fe;
+
+  if (!stream)
+    stream = stderr;
+
+  fprintf(stream, "** FMT state **\n");
+  fprintf(stream, "FMT_dispatch_head: %d, FMT_dispatch_tail: %d, FMT_fetch: %d\n", FMT_dispatch_head, FMT_dispatch_tail, FMT_fetch);
+  fprintf(stream, "FMT_num: not yet\n");
+
+  head = FMT_dispatch_head;
+  while (head != (FMT_fetch + 1) % FMT_size)
+    {
+      fe = &FMT[head];
+      fmt_dumpent(fe, fe - FMT, stream, /* header */TRUE);
+      head = (head + 1) % FMT_size;
+    }
+}
+
 /*
  * simulator state variables
  */
@@ -2518,9 +2557,11 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
   /* mark the mispredicted FMT entry as such */
   FMT[FMT_dispatch_tail].mispred = 1;
 
-  /* restore fetch pointer next to the dispatch tail pointer
-     (FIXME_FMT is this right?) */
+  /* restore fetch pointer next to the dispatch tail pointer */
   FMT_fetch = (FMT_dispatch_tail + 1) % FMT_size;
+  FMT[FMT_fetch] = (const struct FMT_entry){0};
+
+  printf("FMT recovery, new FMT_dispatch_tail=%d, FMT_fetch=%d\n", FMT_dispatch_tail, FMT_fetch);
 
   /* revert create vector back to last precise create vector state, NOTE:
      this is accomplished by resetting all the copied-on-write bits in the
@@ -2917,6 +2958,10 @@ ruu_issue(void)
                                           rs->miss_level = DL1_MISS;
                                         }
                                       events |= PEV_CACHEMISS;
+                                    }
+                                  else
+                                    {
+                                      printf("load dl1c hit on LSQ[%d], lat=%d, cache_dl1_lat=%d\n", rs - LSQ, load_lat, cache_dl1_lat);
                                     }
 				}
 			      else
@@ -4566,12 +4611,7 @@ ruu_fetch(void)
       if (MD_OP_FLAGS(op) & F_CTRL)
         {
           FMT_fetch = (FMT_fetch + 1) % FMT_size;
-          FMT[FMT_fetch].RUU_index = 0;
-          FMT[FMT_fetch].mispred = 0;
-          FMT[FMT_fetch].branch_penalty = 0;
-          FMT[FMT_fetch].il1_count = 0;
-          FMT[FMT_fetch].il2_count = 0;
-          FMT[FMT_fetch].itlb_count = 0;
+          FMT[FMT_fetch] = (const struct FMT_entry){0};
         }
     }
 }
@@ -4891,8 +4931,9 @@ sim_main(void)
 
       lsq_dump(stdout);
       ruu_dump(stdout);
+      fmt_dump(stdout);
 
-      printf("%ld: RUU_num=%d, RUU_head=%d, RUU_tail=%d, FMT_dispatch_head=%d, FMT_dispatch_tail=%d, FMT_fetch=%d\n",
+      printf("[%ld] RUU_num=%d, RUU_head=%d, RUU_tail=%d, FMT_dispatch_head=%d, FMT_dispatch_tail=%d, FMT_fetch=%d\n",
              sim_cycle, RUU_num, RUU_head, RUU_tail, FMT_dispatch_head, FMT_dispatch_tail, FMT_fetch);
 
       /* go to next cycle */
