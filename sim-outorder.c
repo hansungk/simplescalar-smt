@@ -356,12 +356,13 @@ static counter_t sim_invalid_addrs;
 /* Represents an entry for the FMT.  Tracks and stores frontend miss
    informations of a single branch. */
 struct FMT_entry {
-  int RUU_index;      /* RUU_station entry that this branch is in */
-  int mispred;        /* is this branch mispredicted? */
-  int branch_penalty; /* branch penalty counter */
-  int il1_count;        /* L1 I-cache miss counter */
-  int il2_count;        /* L1 I-cache miss counter */
-  int itlb_count;       /* L1 I-cache miss counter */
+  int RUU_index;           /* RUU_station entry that this branch is in */
+  int mispred;             /* is this branch mispredicted? */
+  int branch_penalty;      /* branch penalty counter */
+  int sFMT_branch_penalty; /* branch penalty counter for sFMT */
+  int il1_count;           /* L1 I-cache miss counter */
+  int il2_count;           /* L1 I-cache miss counter */
+  int itlb_count;          /* L1 I-cache miss counter */
 };
 
 /* FMT table */
@@ -387,6 +388,24 @@ static int FMT_size;
 /* if 1, increment global branch penalty counter every cycle until a
    new instruction enters RUU */
 static int FMT_no_dispatch_after_mispred = 0;
+
+/* sFMT: remember PC of the last fetch-blocked instruction in order to
+   mark sfmt_icache_itlb_miss bit when dispatching to RUU */
+static md_addr_t sFMT_last_fetch_block_PC = NULL;
+
+/* sFMT local I-cache/I-TLB counters */
+static counter_t sFMT_local_il1_count = 0;
+static counter_t sFMT_local_il2_count = 0;
+static counter_t sFMT_local_itlb_count = 0;
+
+/* sFMT global CPI component cycles */
+static counter_t sFMT_global_il1_count = 0;
+static counter_t sFMT_global_il2_count = 0;
+static counter_t sFMT_global_itlb_count = 0;
+static counter_t sFMT_global_branch_penalty = 0;
+static counter_t sFMT_global_dl1_count = 0;
+static counter_t sFMT_global_dl2_count = 0;
+static counter_t sFMT_global_dtlb_count = 0;
 
 static void
 fmt_init(void)
@@ -442,6 +461,20 @@ fmt_dump(FILE *stream)
       fmt_dumpent(fe, fe - FMT, stream, /* header */TRUE);
       head = (head + 1) % FMT_size;
     }
+}
+
+/* clear entire sFMT */
+static void
+sfmt_clear(void)
+{
+  for (int i = 0; i < FMT_size; i++)
+    {
+      /* FIXME_FMT: just clear this? */
+      FMT[i].sFMT_branch_penalty = 0;
+    }
+  sFMT_local_il1_count = 0;
+  sFMT_local_il2_count = 0;
+  sFMT_local_itlb_count = 0;
 }
 
 /*
@@ -1634,6 +1667,7 @@ struct RUU_station {
   int issued;				/* operation is/was executing */
   int completed;			/* operation has completed execution */
   enum miss_level miss_level;		/* where did the mem operation miss? */
+  int sfmt_icache_itlb_miss;		/* sFMT I-cache/I-TLB miss bit */
   /* output operand dependency list, these lists are used to
      limit the number of associative searches into the RUU when
      instructions complete and need to wake up dependent insts */
@@ -2273,6 +2307,44 @@ fmt_commit(void)
   */
 }
 
+/* update sFMT global branch penalty counters */
+static void
+sfmt_commit_branch(void)
+{
+  if (FMT[FMT_dispatch_head].mispred)
+    {
+      sFMT_global_branch_penalty += FMT[FMT_dispatch_head].sFMT_branch_penalty;
+      /* clear entire sFMT */
+      sfmt_clear();
+    }
+}
+
+/* update sFMT global I-cache/I-TLB counters */
+static void
+sfmt_commit_imissed(void)
+{
+  /* update global I-counters */
+  sFMT_global_il1_count += sFMT_local_il1_count;
+  sFMT_global_il2_count += sFMT_local_il2_count;
+  sFMT_global_itlb_count += sFMT_local_itlb_count;
+
+  /* reset local I-counters */
+  sFMT_local_il1_count = 0;
+  sFMT_local_il2_count = 0;
+  sFMT_local_itlb_count = 0;
+
+  /* reset all sfmt_icache_itlb_miss bits in RUU */
+  int num = RUU_num;
+  int head = RUU_head;
+  struct RUU_station *rs;
+  while (num)
+    {
+      RUU[head].sfmt_icache_itlb_miss = FALSE;
+      head = (head + 1) % RUU_size;
+      num--;
+    }
+}
+
 /*
  *  RUU_COMMIT() - instruction retirement pipeline stage
  */
@@ -2427,22 +2499,34 @@ ruu_commit(void)
 	    panic ("retired instruction has odeps\n");
         }
 
+      /* if the retired instruction was marked I-cache/I-tlb miss,
+         commit sFMT entry.  This has to be done first because
+         sfmt_commit_branch() may clear the entire sFMT. */
+      if (rs->sfmt_icache_itlb_miss)
+        {
+          sfmt_commit_imissed();
+        }
+
       /* if the retired instruction was a branch, advance FMT
          dispatch_head and update global counters */
       if (MD_OP_FLAGS(rs->op) & F_CTRL)
         {
           FMT_dispatch_head = (FMT_dispatch_head + 1) % FMT_size;
-
           /* sanity check: does the RUU index of the FMT dispatch head
              entry match the retired instruction? */
           int RUU_retired = (RUU_head + (RUU_size-1)) % RUU_size;
           if (FMT[FMT_dispatch_head].RUU_index != RUU_retired)
-            panic("RUU/FMT mismatch: dispatch_head.RUU_index=%d, RUU_retired=%d\n",
-                  FMT[FMT_dispatch_head].RUU_index,
-                  RUU_retired);
+            {
+              panic("RUU/FMT mismatch: dispatch_head.RUU_index=%d, RUU_retired=%d\n",
+                    FMT[FMT_dispatch_head].RUU_index,
+                    RUU_retired);
+            }
 
+          /* update global counters */
           fmt_commit();
+          sfmt_commit_branch();
         }
+
     }
 }
 
@@ -3164,6 +3248,7 @@ struct fetch_rec {
   struct bpred_update_t dir_update;	/* bpred direction update info */
   int stack_recover_idx;		/* branch predictor RSB index */
   unsigned int ptrace_seq;		/* print trace sequence id */
+  int sfmt_icache_itlb_miss;		/* sFMT I-cache/I-TLB miss bit */
 };
 static struct fetch_rec *fetch_data;	/* IFETCH -> DISPATCH inst queue */
 static int fetch_num;			/* num entries in IF -> DIS queue */
@@ -3923,6 +4008,7 @@ ruu_dispatch(void)
   struct bpred_update_t *dir_update_ptr;/* branch predictor dir update ptr */
   int stack_recover_idx;		/* bpred retstack recovery index */
   unsigned int pseq;			/* pipetrace sequence number */
+  int sfmt_icache_itlb_miss;		/* sFMT I-cache/I-TLB miss bit */
   int is_write;				/* store? */
   int made_check;			/* used to ensure DLite entry */
   int br_taken, br_pred_taken;		/* if br, taken?  predicted taken? */
@@ -3962,6 +4048,7 @@ ruu_dispatch(void)
       dir_update_ptr = &(fetch_data[fetch_head].dir_update);
       stack_recover_idx = fetch_data[fetch_head].stack_recover_idx;
       pseq = fetch_data[fetch_head].ptrace_seq;
+      sfmt_icache_itlb_miss = fetch_data[fetch_head].sfmt_icache_itlb_miss;
 
       /* decode the inst */
       MD_SET_OPCODE(op, inst);
@@ -4151,7 +4238,9 @@ ruu_dispatch(void)
 	  /* rs->tag is already set */
 	  rs->seq = ++inst_seq;
 	  rs->queued = rs->issued = rs->completed = FALSE;
+          rs->miss_level = NO_MISS;
 	  rs->ptrace_seq = pseq;
+          rs->sfmt_icache_itlb_miss = sfmt_icache_itlb_miss;
 
           /* A new right-path instruction has entered RUU, stop
              incrementing global branch penalty counter */
@@ -4193,6 +4282,7 @@ ruu_dispatch(void)
 	      lsq->queued = lsq->issued = lsq->completed = FALSE;
               lsq->miss_level = NO_MISS;
 	      lsq->ptrace_seq = pseq + 1;
+              lsq->sfmt_icache_itlb_miss = sfmt_icache_itlb_miss;
 
 	      /* pipetrace this uop */
 	      ptrace_newuop(lsq->ptrace_seq, "internal ld/st", lsq->PC, 0);
@@ -4365,7 +4455,10 @@ ruu_dispatch(void)
   /* if no new right-path instruction has entered RUU after the last
      mispred branch, increment FMT global branch penalty counter */
   if (FMT_no_dispatch_after_mispred)
-    FMT_global_branch_penalty++;
+    {
+      FMT_global_branch_penalty++;
+      printf("dispatch: no new one after mispred, incrementing global branch_counter\n");
+    }
 
   /* need to enter DLite at least once per cycle */
   if (!made_check)
@@ -4512,19 +4605,26 @@ ruu_fetch(void)
                 {
                   printf("FMT[%d] local itlb miss, lat=%d\n", FMT_fetch, lat);
                   FMT[FMT_fetch].itlb_count += lat - 1;
+                  sFMT_local_itlb_count += lat - 1;
                 }
               /* il2 miss? */
               else if (lat > cache_il2_lat)
                 {
                   printf("FMT[%d] local il2c miss, lat=%d\n", FMT_fetch, lat);
                   FMT[FMT_fetch].il2_count += lat - 1;
+                  sFMT_local_il2_count += lat - 1;
                 }
               /* il1 miss? */
               else
                 {
                   printf("FMT[%d] local il1c miss, lat=%d\n", FMT_fetch, lat);
                   FMT[FMT_fetch].il1_count += lat - 1;
+                  sFMT_local_il1_count += lat - 1;
                 }
+
+              /* mark position of this I-missed instruction */
+              printf("FETCH: blocked fetching PC=%p...\n", fetch_regs_PC);
+              sFMT_last_fetch_block_PC = fetch_regs_PC;
 
 	      break;
 	    }
@@ -4587,6 +4687,15 @@ ruu_fetch(void)
       fetch_data[fetch_tail].pred_PC = fetch_pred_PC;
       fetch_data[fetch_tail].stack_recover_idx = stack_recover_idx;
       fetch_data[fetch_tail].ptrace_seq = ptrace_seq++;
+      fetch_data[fetch_tail].sfmt_icache_itlb_miss = FALSE;
+      /* if instruction was blocked while fetching before, mark as
+         such for use in sFMT */
+      if (sFMT_last_fetch_block_PC == fetch_regs_PC)
+        {
+          printf("FETCH: OK, fetched PC=%p\n", fetch_regs_PC);
+          fetch_data[fetch_tail].sfmt_icache_itlb_miss = TRUE;
+          sFMT_last_fetch_block_PC = NULL;
+        }
 
       /* for pipe trace */
       ptrace_newinst(fetch_data[fetch_tail].ptrace_seq,
@@ -4614,6 +4723,7 @@ ruu_fetch(void)
           FMT[FMT_fetch] = (const struct FMT_entry){0};
         }
     }
+  printf("FETCH: fetch_num=%d\n", fetch_num);
 }
 
 /* default machine state accessor, used by DLite */
@@ -4707,7 +4817,10 @@ fmt_branch_penalty(void)
   for (int i = FMT_dispatch_tail;
        i != FMT_dispatch_head;
        i = (i + (FMT_size-1)) % FMT_size)
-    FMT[i].branch_penalty++;
+    {
+      FMT[i].branch_penalty++;
+      FMT[i].sFMT_branch_penalty++;
+    }
 }
 
 /* update FMT counters on long backend misses and long latency
@@ -4727,12 +4840,15 @@ fmt_long_backend_miss(void)
         {
         case DL1_MISS:
           FMT_global_dl1_count++;
+          sFMT_global_dl1_count++;
           break;
         case DL2_MISS:
           FMT_global_dl2_count++;
+          sFMT_global_dl2_count++;
           break;
         case DTLB_MISS:
           FMT_global_dtlb_count++;
+          sFMT_global_dtlb_count++;
           break;
         case NO_MISS:
           /* RUU blocked by dl1 cache hit latency; this is not counted */
@@ -4945,6 +5061,14 @@ sim_main(void)
              FMT_global_dl1_count,
              FMT_global_dl2_count,
              FMT_global_dtlb_count);
+      printf("sFMT global counters: il1_count=%ld, il2_count=%ld, itlb_count=%ld, branch_penalty=%ld, dl1_count=%ld, dl2_count=%ld, dtlb_count=%ld\n",
+             sFMT_global_il1_count,
+             sFMT_global_il2_count,
+             sFMT_global_itlb_count,
+             sFMT_global_branch_penalty,
+             sFMT_global_dl1_count,
+             sFMT_global_dl2_count,
+             sFMT_global_dtlb_count);
 
   /* go to next cycle */
       sim_cycle++;
