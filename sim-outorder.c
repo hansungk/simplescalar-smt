@@ -375,15 +375,18 @@ static counter_t FMT_global_il1_count = 0;
 static counter_t FMT_global_il2_count = 0;
 static counter_t FMT_global_itlb_count = 0;
 static counter_t FMT_global_branch_penalty = 0;
-
-/* if 1, increment global branch penalty counter every cycle until a
-   new instruction enters RUU */
-static int FMT_no_dispatch_after_mispred = 0;
+static counter_t FMT_global_dl1_count = 0;
+static counter_t FMT_global_dl2_count = 0;
+static counter_t FMT_global_dtlb_count = 0;
 
 /* FMT size.  It must have as many rows as the processor supports
    outstanding branches.  As an upper bound, set it to RUU_size
    (FIXME). */
 static int FMT_size;
+
+/* if 1, increment global branch penalty counter every cycle until a
+   new instruction enters RUU */
+static int FMT_no_dispatch_after_mispred = 0;
 
 static void
 fmt_init(void)
@@ -491,8 +494,6 @@ dl1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 	      struct cache_blk_t *blk,	/* ptr to block in upper level */
 	      tick_t now)		/* time of access */
 {
-  printf("dl1c miss\n");
-
   unsigned int lat;
 
   if (cache_dl2)
@@ -529,8 +530,6 @@ dl2_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 	      struct cache_blk_t *blk,	/* ptr to block in upper level */
 	      tick_t now)		/* time of access */
 {
-  printf("dl2c miss\n");
-
   /* this is a miss to the lowest level, so access main memory */
   if (cmd == Read)
     return mem_access_latency(bsize);
@@ -556,7 +555,7 @@ if (cache_il2)
       /* access next level of inst cache hierarchy */
       lat = cache_access(cache_il2, cmd, baddr, NULL, bsize,
 			 /* now */now, /* pudata */NULL, /* repl addr */NULL);
-      printf("il1c miss on [%d], lat=%d\n", FMT_fetch, lat);
+      printf("il1c miss on FMT[%d], lat=%d\n", FMT_fetch, lat);
 
       if (cmd == Read)
 	return lat;
@@ -587,7 +586,7 @@ il2_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
       int lat = mem_access_latency(bsize);
       /* increment FMT counter.  assumes il2 miss latency always
          overshadows itlb miss latency */
-      printf("il2c miss on [%d], lat=%d\n", FMT_fetch, lat);
+      printf("il2c miss on FMT[%d], lat=%d\n", FMT_fetch, lat);
       FMT[FMT_fetch].il2_count += lat - 1;
       return lat;
     }
@@ -609,7 +608,7 @@ itlb_access_fn(enum mem_cmd cmd,	/* access cmd, Read or Write */
 	       struct cache_blk_t *blk,	/* ptr to block in upper level */
 	       tick_t now)		/* time of access */
 {
-  printf("itlb miss on [%d], lat=%d\n", FMT_fetch, tlb_miss_lat);
+  printf("itlb miss on FMT[%d], lat=%d\n", FMT_fetch, tlb_miss_lat);
 
   md_addr_t *phy_page_ptr = (md_addr_t *)blk->user_data;
 
@@ -1561,6 +1560,13 @@ typedef unsigned int INST_SEQ_TYPE;
 /* total output dependencies possible */
 #define MAX_ODEPS               2
 
+enum miss_level {
+  NO_MISS,
+  DL1_MISS,
+  DL2_MISS,
+  DTLB_MISS
+};
+
 /* a register update unit (RUU) station, this record is contained in the
    processors RUU, which serves as a collection of ordered reservations
    stations.  The reservation stations capture register results and await
@@ -1596,6 +1602,7 @@ struct RUU_station {
   int queued;				/* operands ready and queued */
   int issued;				/* operation is/was executing */
   int completed;			/* operation has completed execution */
+  enum miss_level miss_level;		/* where did the mem operation miss? */
   /* output operand dependency list, these lists are used to
      limit the number of associative searches into the RUU when
      instructions complete and need to wake up dependent insts */
@@ -1663,10 +1670,13 @@ ruu_dumpent(struct RUU_station *rs,		/* ptr to RUU station */
 	    rs->spec_mode ? "t" : "f", rs->addr, rs->tag);
   fprintf(stream, "         seq: 0x%08x, ptrace_seq: 0x%08x\n",
 	  rs->seq, rs->ptrace_seq);
-  fprintf(stream, "         queued: %s, issued: %s, completed: %s\n",
+  fprintf(stream, "         queued: %s, issued: %s, completed: %s, miss: %s\n",
 	  rs->queued ? "t" : "f",
 	  rs->issued ? "t" : "f",
-	  rs->completed ? "t" : "f");
+	  rs->completed ? "t" : "f",
+          rs->miss_level == DL1_MISS ? "dl1" :
+          rs->miss_level == DL2_MISS ? "dl2" :
+          rs->miss_level == DTLB_MISS ? "dtlb" : "na");
   fprintf(stream, "         operands ready: %s\n",
 	  OPERANDS_READY(rs) ? "t" : "f");
 }
@@ -2228,11 +2238,14 @@ fmt_commit(void)
          FMT[FMT_dispatch_head].itlb_count,
          FMT[FMT_dispatch_head].mispred,
          FMT[FMT_dispatch_head].branch_penalty);
-  printf("FMT global counters: il1_count=%d, il2_count=%d, itlb_count=%d, branch_penalty=%d\n",
+  printf("FMT global counters: il1_count=%ld, il2_count=%ld, itlb_count=%ld, branch_penalty=%ld, dl1_count=%ld, dl2_count=%ld, dtlb_count=%ld\n",
          FMT_global_il1_count,
          FMT_global_il2_count,
          FMT_global_itlb_count,
-         FMT_global_branch_penalty);
+         FMT_global_branch_penalty,
+         FMT_global_dl1_count,
+         FMT_global_dl2_count,
+         FMT_global_dtlb_count);
 }
 
 /*
@@ -2374,6 +2387,11 @@ ruu_commit(void)
       /* commit head entry of RUU */
       RUU_head = (RUU_head + 1) % RUU_size;
       RUU_num--;
+
+      /* FIXME_FMT */
+      printf("committed RUU_head=%d, LSQ_head=%d\n",
+             (RUU_head + (RUU_size-1)) % RUU_size,
+             (LSQ_head + (LSQ_size-1)) % LSQ_size);
 
       /* one more instruction committed to architected state */
       committed++;
@@ -2887,7 +2905,19 @@ ruu_issue(void)
 						 (rs->addr & ~3), NULL, 4,
 						 sim_cycle, NULL, NULL);
 				  if (load_lat > cache_dl1_lat)
-				    events |= PEV_CACHEMISS;
+                                    {
+                                      if (load_lat > cache_dl2_lat)
+                                        {
+                                          printf("load dl2c miss on LSQ[%d], lat=%d, cache_dl2_lat=%d\n", rs - LSQ, load_lat, cache_dl2_lat);
+                                          rs->miss_level = DL2_MISS;
+                                        }
+                                      else
+                                        {
+                                          printf("load dl1c miss on LSQ[%d], lat=%d, cache_dl1_lat=%d\n", rs - LSQ, load_lat, cache_dl1_lat);
+                                          rs->miss_level = DL1_MISS;
+                                        }
+                                      events |= PEV_CACHEMISS;
+                                    }
 				}
 			      else
 				{
@@ -2909,6 +2939,13 @@ ruu_issue(void)
 
 			      /* D-cache/D-TLB accesses occur in parallel */
 			      load_lat = MAX(tlb_lat, load_lat);
+
+                              /* if this is a D_TLB miss, mark as such for FMT handling */
+                              if (tlb_lat > tlb_miss_lat && load_lat == tlb_lat)
+                                {
+                                  printf("load dtlb miss on LSQ[%d], lat=%d, tlb_miss_lat=%d\n", rs - LSQ, load_lat, tlb_miss_lat);
+                                  rs->miss_level = DTLB_MISS;
+                                }
 			    }
 
 			  /* use computed cache access latency */
@@ -4123,6 +4160,7 @@ ruu_dispatch(void)
 	      /* lsq->tag is already set */
 	      lsq->seq = ++inst_seq;
 	      lsq->queued = lsq->issued = lsq->completed = FALSE;
+              lsq->miss_level = NO_MISS;
 	      lsq->ptrace_seq = pseq + 1;
 
 	      /* pipetrace this uop */
@@ -4290,6 +4328,8 @@ ruu_dispatch(void)
 			    addr, sim_num_insn, sim_cycle))
 	dlite_main(regs.regs_PC, pred_PC, sim_cycle, &regs, mem);
     }
+
+  printf("dispatched %d, RUU_num=%d, LSQ_num=%d, fetch_num=%d\n", n_dispatched, RUU_num, LSQ_num, fetch_num);
 
   /* if no new right-path instruction has entered RUU after the last
      mispred branch, increment FMT global branch penalty counter */
@@ -4634,6 +4674,38 @@ fmt_branch_penalty(void)
     FMT[i].branch_penalty++;
 }
 
+/* update FMT counters on long backend misses and long latency
+   stalls */
+static void
+fmt_long_backend_miss(void)
+{
+  /* memory operations are split into RUU (addq) and LSQ (ld/st), so
+     need to check head of LSQ instead of RUU */
+  if (/* RUU full? */RUU_num == RUU_size &&
+      /* LSQ not empty? */LSQ_num > 0 &&
+      /* LSQ blocked? */LSQ[LSQ_head].completed == FALSE &&
+      /* LSQ head matches RUU? */LSQ[LSQ_head].PC == RUU[RUU_head].PC)
+    {
+      switch (LSQ[LSQ_head].miss_level)
+        {
+        case DL1_MISS:
+          FMT_global_dl1_count++;
+          break;
+        case DL2_MISS:
+          FMT_global_dl2_count++;
+          break;
+        case DTLB_MISS:
+          FMT_global_dtlb_count++;
+          break;
+        case NO_MISS:
+          /* dl1 cache hit */
+          break;
+        default:
+          panic("unknown miss_level");
+        }
+    }
+}
+
 /* start simulation, program loaded, processor precise state initialized */
 void
 sim_main(void)
@@ -4810,14 +4882,21 @@ sim_main(void)
       LSQ_count += LSQ_num;
       LSQ_fcount += ((LSQ_num == LSQ_size) ? 1 : 0);
 
-      /* update FMT branch penalty fields
-         FIXME_FMT: at the beginning or end? */
+      /* update FMT branch penalty fields */
       fmt_branch_penalty();
+
+      /* update FMT for long backend misses and latency stalls, i.e. D1,
+         D2 and D-TLB miss */
+      fmt_long_backend_miss();
+
+      lsq_dump(stdout);
+      ruu_dump(stdout);
+
+      printf("%ld: RUU_num=%d, RUU_head=%d, RUU_tail=%d, FMT_dispatch_head=%d, FMT_dispatch_tail=%d, FMT_fetch=%d\n",
+             sim_cycle, RUU_num, RUU_head, RUU_tail, FMT_dispatch_head, FMT_dispatch_tail, FMT_fetch);
 
       /* go to next cycle */
       sim_cycle++;
-
-      printf("FMT_dispatch_head=%d, FMT_dispatch_tail=%d, FMT_fetch=%d\n", FMT_dispatch_head, FMT_dispatch_tail, FMT_fetch);
 
       /* finish early? */
       if (max_insts && sim_num_insn >= max_insts)
