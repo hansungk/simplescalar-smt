@@ -370,6 +370,7 @@ static struct FMT_entry *FMT;
 static int FMT_dispatch_head; /* FMT dispatch head entry */
 static int FMT_dispatch_tail; /* FMT dispatch tail entry */
 static int FMT_fetch;         /* FMT fetch entry */
+static int FMT_num;           /* num entries currently in FMT */
 
 /* FMT global CPI component cycles */
 static counter_t FMT_global_il1_count = 0;
@@ -420,6 +421,7 @@ fmt_init(void)
      which is an invalid entry and will be discarded. */
   FMT_dispatch_head = FMT_dispatch_tail = FMT_size - 1;
   FMT_fetch = 0;
+  FMT_num = 1;
 }
 
 /* dump the contents of the FMT */
@@ -452,14 +454,16 @@ fmt_dump(FILE *stream)
 
   fprintf(stream, "** FMT state **\n");
   fprintf(stream, "FMT_dispatch_head: %d, FMT_dispatch_tail: %d, FMT_fetch: %d\n", FMT_dispatch_head, FMT_dispatch_tail, FMT_fetch);
-  fprintf(stream, "FMT_num: not yet\n");
+  fprintf(stream, "FMT_num: %d\n", FMT_num);
 
+  num = FMT_num;
   head = (FMT_dispatch_head + 1) % FMT_size;
-  while (head != (FMT_fetch + 1) % FMT_size)
+  while (num)
     {
       fe = &FMT[head];
       fmt_dumpent(fe, fe - FMT, stream, /* header */TRUE);
       head = (head + 1) % FMT_size;
+      num--;
     }
 }
 
@@ -2515,6 +2519,7 @@ ruu_commit(void)
       if (MD_OP_FLAGS(rs->op) & F_CTRL)
         {
           FMT_dispatch_head = (FMT_dispatch_head + 1) % FMT_size;
+          FMT_num--;
           /* sanity check: does the RUU index of the FMT dispatch head
              entry match the retired instruction? */
           int RUU_retired = (RUU_head + (RUU_size-1)) % RUU_size;
@@ -2635,6 +2640,7 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
   /* restore fetch pointer next to the dispatch tail pointer */
   FMT_fetch = (FMT_dispatch_tail + 1) % FMT_size;
   FMT[FMT_fetch] = (const struct FMT_entry){0};
+  FMT_num = (FMT_fetch + FMT_size - FMT_dispatch_head) % FMT_size;
 
   printf("FMT recovery: FMT_dispatch_tail=%d, FMT_fetch=%d\n", FMT_dispatch_tail, FMT_fetch);
 
@@ -4725,7 +4731,10 @@ ruu_fetch(void)
        * this is done when all miss latency finishes */
       if (MD_OP_FLAGS(op) & F_CTRL)
         {
+          if (FMT_num >= FMT_size)
+            panic("no space in FMT!");
           FMT_fetch = (FMT_fetch + 1) % FMT_size;
+          FMT_num++;
           FMT[FMT_fetch] = (const struct FMT_entry){0};
         }
     }
