@@ -11,3 +11,5 @@ sim-profile
 sim-safe
 sysprobe
 tags
+TAGS
+test_workload/
