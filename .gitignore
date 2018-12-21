@@ -1,5 +1,6 @@
 *.a
 *.o
+*~
 sim-bpred
 sim-cache
 sim-cheetah

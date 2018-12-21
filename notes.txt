@@ -1,0 +1,11 @@
+SMT
+===
+
+# Things to add
+
+* Program counters per thread
+* Register files per thread
+
+# Things to modify
+
+* 1 register file -> an array of register files
