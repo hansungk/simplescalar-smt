@@ -5078,7 +5078,7 @@ sim_main(void)
 	  MD_SET_OPCODE(op, inst);
 
 	  /* execute the instruction */
-	  fprintf(stderr, "inst: %d\n", op);
+	  /* fprintf(stderr, "inst: %d\n", op); */
 	  switch (op)
 	    {
 #define DEFINST(OP,MSK,NAME,OPFORM,RES,FLAGS,O1,O2,I1,I2,I3)		\
