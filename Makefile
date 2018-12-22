@@ -79,7 +79,7 @@
 ##
 CC = gcc
 
-OFLAGS = -fsanitize=address -O0 -Wall -g -w -fpermissive
+OFLAGS = -fsanitize=address,leak -Og -Wall -gdwarf-4 -g3 -w -fpermissive
 # OFLAGS = -O3 -g -w -fpermissive
 MFLAGS = `./sysprobe -flags`
 MLIBS  = `./sysprobe -libs` -lm
