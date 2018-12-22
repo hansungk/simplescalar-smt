@@ -6,6 +6,7 @@ sim-cache
 sim-cheetah
 sim-eio
 sim-fast
+sim-fast-*
 sim-mase
 sim-outorder
 sim-outorder-*
