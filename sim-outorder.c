@@ -1534,6 +1534,36 @@ sim_reg_stats(struct stat_sdb_t *sdb)   /* stats database */
   if (dtlb)
     cache_reg_stats(dtlb, sdb);
 
+  /* FMT stats */
+  stat_reg_counter(sdb, "FMT_global_il1_count", "cumulative LSQ full count",
+                   &FMT_global_il1_count, /* initial value */0, /* format */NULL);
+  stat_reg_counter(sdb, "FMT_global_il2_count", "cumulative LSQ full count",
+                   &FMT_global_il2_count, /* initial value */0, /* format */NULL);
+  stat_reg_counter(sdb, "FMT_global_itlb_count", "cumulative LSQ full count",
+                   &FMT_global_itlb_count, /* initial value */0, /* format */NULL);
+  stat_reg_counter(sdb, "FMT_global_branch_penalty", "cumulative LSQ full count",
+                   &FMT_global_branch_penalty, /* initial value */0, /* format */NULL);
+  stat_reg_counter(sdb, "FMT_global_dl1_count", "cumulative LSQ full count",
+                   &FMT_global_dl1_count, /* initial value */0, /* format */NULL);
+  stat_reg_counter(sdb, "FMT_global_dl2_count", "cumulative LSQ full count",
+                   &FMT_global_dl2_count, /* initial value */0, /* format */NULL);
+  stat_reg_counter(sdb, "FMT_global_dtlb_count", "cumulative LSQ full count",
+                   &FMT_global_dtlb_count, /* initial value */0, /* format */NULL);
+  stat_reg_formula(sdb, "FMT_global_il1_CPI", "",
+                   "FMT_global_il1_count / sim_num_insn", /* format */NULL);
+  stat_reg_formula(sdb, "FMT_global_il2_CPI", "",
+                   "FMT_global_il2_count / sim_num_insn", /* format */NULL);
+  stat_reg_formula(sdb, "FMT_global_itlb_CPI", "",
+                   "FMT_global_itlb_count / sim_num_insn", /* format */NULL);
+  stat_reg_formula(sdb, "FMT_global_branch_penalty", "",
+                   "FMT_global_branch_penalty / sim_num_insn", /* format */NULL);
+  stat_reg_formula(sdb, "FMT_global_dl1_CPI", "",
+                   "FMT_global_dl1_count / sim_num_insn", /* format */NULL);
+  stat_reg_formula(sdb, "FMT_global_dl2_CPI", "",
+                   "FMT_global_dl2_count / sim_num_insn", /* format */NULL);
+  stat_reg_formula(sdb, "FMT_global_dtlb_count", "",
+                   "FMT_global_dtlb_count / sim_num_insn", /* format */NULL);
+
   /* debug variable(s) */
   stat_reg_counter(sdb, "sim_invalid_addrs",
 		   "total non-speculative bogus addresses seen (debug var)",
@@ -4968,6 +4998,26 @@ fmt_long_backend_miss(void)
       return 1;
     }
   return 0;
+}
+
+static void
+fmt_print_stats(void)
+{
+  fprintf(stderr, "FMT.global_il1_count		%10ld %10f\n",		FMT_global_il1_count, (float) FMT_global_il1_count / sim_cycle);
+  fprintf(stderr, "FMT.global_il2_count		%10ld %10f\n",		FMT_global_il2_count, (float) FMT_global_il2_count / sim_cycle);
+  fprintf(stderr, "FMT.global_itlb_count		%10ld %10f\n",	FMT_global_itlb_count, (float) FMT_global_itlb_count / sim_cycle);
+  fprintf(stderr, "FMT.global_branch_penalty	%10ld %10f\n",		FMT_global_branch_penalty, (float) FMT_global_branch_penalty / sim_cycle);
+  fprintf(stderr, "FMT.global_dl1_count		%10ld %10f\n",		FMT_global_dl1_count, (float) FMT_global_dl1_count / sim_cycle);
+  fprintf(stderr, "FMT.global_dl2_count		%10ld %10f\n",		FMT_global_dl2_count, (float) FMT_global_dl2_count / sim_cycle);
+  fprintf(stderr, "FMT.global_dtlb_count		%10ld %10f\n",	FMT_global_dtlb_count, (float) FMT_global_dtlb_count / sim_cycle);
+
+  fprintf(stderr, "sFMT.global_il1_count		%10ld %10f\n",	sFMT_global_il1_count, (float) sFMT_global_il1_count / sim_cycle);
+  fprintf(stderr, "sFMT.global_il2_count		%10ld %10f\n",	sFMT_global_il2_count, (float) sFMT_global_il2_count / sim_cycle);
+  fprintf(stderr, "sFMT.global_itlb_count		%10ld %10f\n",	sFMT_global_itlb_count, (float) sFMT_global_itlb_count / sim_cycle);
+  fprintf(stderr, "sFMT.global_branch_penalty	%10ld %10f\n",		sFMT_global_branch_penalty, (float) sFMT_global_branch_penalty / sim_cycle);
+  fprintf(stderr, "sFMT.global_dl1_count		%10ld %10f\n",	sFMT_global_dl1_count, (float) sFMT_global_dl1_count / sim_cycle);
+  fprintf(stderr, "sFMT.global_dl2_count		%10ld %10f\n",	sFMT_global_dl2_count, (float) sFMT_global_dl2_count / sim_cycle);
+  fprintf(stderr, "sFMT.global_dtlb_count		%10ld %10f\n",	sFMT_global_dtlb_count, (float) sFMT_global_dtlb_count / sim_cycle);
 }
 
 /* start simulation, program loaded, processor precise state initialized */
