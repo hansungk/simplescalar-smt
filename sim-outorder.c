@@ -1535,19 +1535,19 @@ sim_reg_stats(struct stat_sdb_t *sdb)   /* stats database */
     cache_reg_stats(dtlb, sdb);
 
   /* FMT stats */
-  stat_reg_counter(sdb, "FMT_global_il1_count", "cumulative LSQ full count",
+  stat_reg_counter(sdb, "FMT_global_il1_count", "",
                    &FMT_global_il1_count, /* initial value */0, /* format */NULL);
-  stat_reg_counter(sdb, "FMT_global_il2_count", "cumulative LSQ full count",
+  stat_reg_counter(sdb, "FMT_global_il2_count", "",
                    &FMT_global_il2_count, /* initial value */0, /* format */NULL);
-  stat_reg_counter(sdb, "FMT_global_itlb_count", "cumulative LSQ full count",
+  stat_reg_counter(sdb, "FMT_global_itlb_count", "",
                    &FMT_global_itlb_count, /* initial value */0, /* format */NULL);
-  stat_reg_counter(sdb, "FMT_global_branch_penalty", "cumulative LSQ full count",
+  stat_reg_counter(sdb, "FMT_global_branch_penalty", "",
                    &FMT_global_branch_penalty, /* initial value */0, /* format */NULL);
-  stat_reg_counter(sdb, "FMT_global_dl1_count", "cumulative LSQ full count",
+  stat_reg_counter(sdb, "FMT_global_dl1_count", "",
                    &FMT_global_dl1_count, /* initial value */0, /* format */NULL);
-  stat_reg_counter(sdb, "FMT_global_dl2_count", "cumulative LSQ full count",
+  stat_reg_counter(sdb, "FMT_global_dl2_count", "",
                    &FMT_global_dl2_count, /* initial value */0, /* format */NULL);
-  stat_reg_counter(sdb, "FMT_global_dtlb_count", "cumulative LSQ full count",
+  stat_reg_counter(sdb, "FMT_global_dtlb_count", "",
                    &FMT_global_dtlb_count, /* initial value */0, /* format */NULL);
   stat_reg_formula(sdb, "FMT_global_il1_CPI", "",
                    "FMT_global_il1_count / sim_num_insn", /* format */NULL);
@@ -1563,6 +1563,36 @@ sim_reg_stats(struct stat_sdb_t *sdb)   /* stats database */
                    "FMT_global_dl2_count / sim_num_insn", /* format */NULL);
   stat_reg_formula(sdb, "FMT_global_dtlb_count", "",
                    "FMT_global_dtlb_count / sim_num_insn", /* format */NULL);
+
+  /* sFMT stats */
+  stat_reg_counter(sdb, "sFMT_global_il1_count", "",
+                   &sFMT_global_il1_count, /* initial value */0, /* format */NULL);
+  stat_reg_counter(sdb, "sFMT_global_il2_count", "",
+                   &sFMT_global_il2_count, /* initial value */0, /* format */NULL);
+  stat_reg_counter(sdb, "sFMT_global_itlb_count", "",
+                   &sFMT_global_itlb_count, /* initial value */0, /* format */NULL);
+  stat_reg_counter(sdb, "sFMT_global_branch_penalty", "",
+                   &sFMT_global_branch_penalty, /* initial value */0, /* format */NULL);
+  stat_reg_counter(sdb, "sFMT_global_dl1_count", "",
+                   &sFMT_global_dl1_count, /* initial value */0, /* format */NULL);
+  stat_reg_counter(sdb, "sFMT_global_dl2_count", "",
+                   &sFMT_global_dl2_count, /* initial value */0, /* format */NULL);
+  stat_reg_counter(sdb, "sFMT_global_dtlb_count", "",
+                   &sFMT_global_dtlb_count, /* initial value */0, /* format */NULL);
+  stat_reg_formula(sdb, "sFMT_global_il1_CPI", "",
+                   "sFMT_global_il1_count / sim_num_insn", /* format */NULL);
+  stat_reg_formula(sdb, "sFMT_global_il2_CPI", "",
+                   "sFMT_global_il2_count / sim_num_insn", /* format */NULL);
+  stat_reg_formula(sdb, "sFMT_global_itlb_CPI", "",
+                   "sFMT_global_itlb_count / sim_num_insn", /* format */NULL);
+  stat_reg_formula(sdb, "sFMT_global_branch_penalty", "",
+                   "sFMT_global_branch_penalty / sim_num_insn", /* format */NULL);
+  stat_reg_formula(sdb, "sFMT_global_dl1_CPI", "",
+                   "sFMT_global_dl1_count / sim_num_insn", /* format */NULL);
+  stat_reg_formula(sdb, "sFMT_global_dl2_CPI", "",
+                   "sFMT_global_dl2_count / sim_num_insn", /* format */NULL);
+  stat_reg_formula(sdb, "sFMT_global_dtlb_count", "",
+                   "sFMT_global_dtlb_count / sim_num_insn", /* format */NULL);
 
   /* debug variable(s) */
   stat_reg_counter(sdb, "sim_invalid_addrs",
