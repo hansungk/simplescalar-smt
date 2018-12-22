@@ -2494,9 +2494,11 @@ ruu_commit(void)
       RUU_num--;
 
       /* FIXME_FMT */
-      printf("committed RUU_head=%d, LSQ_head=%d\n",
-             (RUU_head + (RUU_size-1)) % RUU_size,
-             (LSQ_head + (LSQ_size-1)) % LSQ_size);
+      if (verbose) {
+        fprintf(stderr, "committed RUU_head=%d, LSQ_head=%d\n",
+                (RUU_head + (RUU_size-1)) % RUU_size,
+                (LSQ_head + (LSQ_size-1)) % LSQ_size);
+      }
 
       /* one more instruction committed to architected state */
       committed++;
@@ -2644,7 +2646,8 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
   FMT[FMT_fetch] = (const struct FMT_entry){0};
   FMT_num = (FMT_fetch + FMT_size - FMT_dispatch_head) % FMT_size;
 
-  printf("FMT recovery: FMT_dispatch_tail=%d, FMT_fetch=%d\n", FMT_dispatch_tail, FMT_fetch);
+  if (verbose)
+    fprintf(stderr, "FMT recovery: FMT_dispatch_tail=%d, FMT_fetch=%d\n", FMT_dispatch_tail, FMT_fetch);
 
   /* revert create vector back to last precise create vector state, NOTE:
      this is accomplished by resetting all the copied-on-write bits in the
@@ -3032,19 +3035,22 @@ ruu_issue(void)
                                     {
                                       if (load_lat > cache_dl2_lat)
                                         {
-                                          printf("LSQ[%d] dl2c miss, lat=%d, cache_dl2_lat=%d\n", rs - LSQ, load_lat, cache_dl2_lat);
+                                          if (verbose)
+                                            fprintf(stderr, "LSQ[%d] dl2c miss, lat=%d, cache_dl2_lat=%d\n", rs - LSQ, load_lat, cache_dl2_lat);
                                           rs->miss_level = DL2_MISS;
                                         }
                                       else
                                         {
-                                          printf("LSQ[%d] dl1c miss, lat=%d, cache_dl1_lat=%d\n", rs - LSQ, load_lat, cache_dl1_lat);
+                                          if (verbose)
+                                            fprintf(stderr, "LSQ[%d] dl1c miss, lat=%d, cache_dl1_lat=%d\n", rs - LSQ, load_lat, cache_dl1_lat);
                                           rs->miss_level = DL1_MISS;
                                         }
                                       events |= PEV_CACHEMISS;
                                     }
                                   else
                                     {
-                                      printf("LSQ[%d] dl1c hit, lat=%d, cache_dl1_lat=%d\n", rs - LSQ, load_lat, cache_dl1_lat);
+                                      if (verbose)
+                                        fprintf(stderr, "LSQ[%d] dl1c hit, lat=%d, cache_dl1_lat=%d\n", rs - LSQ, load_lat, cache_dl1_lat);
                                     }
 				}
 			      else
@@ -3071,7 +3077,8 @@ ruu_issue(void)
                               /* if this is a D_TLB miss, mark as such for FMT handling */
                               if (tlb_lat > tlb_miss_lat && load_lat == tlb_lat)
                                 {
-                                  printf("load dtlb miss on LSQ[%d], lat=%d, tlb_miss_lat=%d\n", rs - LSQ, load_lat, tlb_miss_lat);
+                                  if (verbose)
+                                    fprintf(stderr, "load dtlb miss on LSQ[%d], lat=%d, tlb_miss_lat=%d\n", rs - LSQ, load_lat, tlb_miss_lat);
                                   rs->miss_level = DTLB_MISS;
                                 }
 			    }
@@ -4464,7 +4471,8 @@ ruu_dispatch(void)
 	dlite_main(regs.regs_PC, pred_PC, sim_cycle, &regs, mem);
     }
 
-  printf("dispatched %d, RUU_num=%d, LSQ_num=%d, fetch_num=%d\n", n_dispatched, RUU_num, LSQ_num, fetch_num);
+  if (verbose)
+    fprintf(stderr, "dispatched %d, RUU_num=%d, LSQ_num=%d, fetch_num=%d\n", n_dispatched, RUU_num, LSQ_num, fetch_num);
 
   /* if no new right-path instruction has entered RUU after the last
      mispred branch, increment FMT global branch penalty counter */
@@ -4473,7 +4481,8 @@ ruu_dispatch(void)
     {
       FMT_global_branch_penalty++;
       sFMT_global_branch_penalty++;
-      printf("dispatch: no new one after mispred, incrementing global branch_counter\n");
+      if (verbose)
+        fprintf(stderr, "dispatch: no new one after mispred, incrementing global branch_counter\n");
     }
 
   /* need to enter DLite at least once per cycle */
@@ -4619,27 +4628,31 @@ ruu_fetch(void)
               /* tlb miss? */
               if (last_inst_tmissed && lat == tlb_lat)
                 {
-                  printf("FMT[%d] local itlb miss, lat=%d\n", FMT_fetch, lat);
+                  if (verbose)
+                    fprintf(stderr, "FMT[%d] local itlb miss, lat=%d\n", FMT_fetch, lat);
                   FMT[FMT_fetch].itlb_count += lat - 1;
                   sFMT_local_itlb_count += lat - 1;
                 }
               /* il2 miss? */
               else if (lat > cache_il2_lat)
                 {
-                  printf("FMT[%d] local il2c miss, lat=%d, cache_il2_lat=%d\n", FMT_fetch, lat, cache_il2_lat);
+                  if (verbose)
+                    fprintf(stderr, "FMT[%d] local il2c miss, lat=%d, cache_il2_lat=%d\n", FMT_fetch, lat, cache_il2_lat);
                   FMT[FMT_fetch].il2_count += lat - 1;
                   sFMT_local_il2_count += lat - 1;
                 }
               /* il1 miss? */
               else
                 {
-                  printf("FMT[%d] local il1c miss, lat=%d, cache_il1_lat=%d\n", FMT_fetch, lat, cache_il1_lat);
+                  if (verbose)
+                    fprintf(stderr, "FMT[%d] local il1c miss, lat=%d, cache_il1_lat=%d\n", FMT_fetch, lat, cache_il1_lat);
                   FMT[FMT_fetch].il1_count += lat - 1;
                   sFMT_local_il1_count += lat - 1;
                 }
 
               /* mark position of this I-missed instruction */
-              printf("FETCH: blocked fetching PC=%p...\n", fetch_regs_PC);
+              if (verbose)
+                fprintf(stderr, "FETCH: blocked fetching PC=%p...\n", fetch_regs_PC);
               sFMT_last_fetch_block_PC = fetch_regs_PC;
 
 	      break;
@@ -4708,7 +4721,8 @@ ruu_fetch(void)
          such for use in sFMT */
       if (sFMT_last_fetch_block_PC == fetch_regs_PC)
         {
-          printf("FETCH: OK, fetched PC=%p\n", fetch_regs_PC);
+          if (verbose)
+            fprintf(stderr, "FETCH: OK, fetched PC=%p\n", fetch_regs_PC);
           fetch_data[fetch_tail].sfmt_icache_itlb_miss = TRUE;
           sFMT_last_fetch_block_PC = NULL;
         }
@@ -4745,7 +4759,8 @@ ruu_fetch(void)
             }
         }
     }
-  printf("FETCH: fetch_num=%d\n", fetch_num);
+  if (verbose)
+    fprintf(stderr, "FETCH: fetch_num=%d\n", fetch_num);
 }
 
 /* default machine state accessor, used by DLite */
@@ -4861,7 +4876,8 @@ fmt_long_backend_miss(void)
       /* LSQ blocked? */LSQ[LSQ_head].completed == FALSE &&
       /* LSQ head matches RUU? */LSQ[LSQ_head].PC == RUU[RUU_head].PC)
     {
-      printf("FMT long backend miss\n");
+      if (verbose)
+        fprintf(stderr, "FMT long backend miss\n");
       switch (LSQ[LSQ_head].miss_level)
         {
         case DL1_MISS:
@@ -4997,7 +5013,8 @@ sim_main(void)
      to eliminate this/next state synchronization and relaxation problems */
   for (;;)
     {
-      printf("\n[%ld]\n", sim_cycle);
+      if (verbose)
+        fprintf(stderr, "\n[%ld]\n", sim_cycle);
 
       /* RUU/LSQ sanity checks */
       if (RUU_num < LSQ_num)
@@ -5074,31 +5091,32 @@ sim_main(void)
           fmt_branch_penalty();
         }
 
-      // lsq_dump(stdout);
-      fmt_dump(stdout);
-      ruu_dump(stdout);
+      if (verbose) {
+        // lsq_dump(stderr);
+        fmt_dump(stderr);
+        ruu_dump(stderr);
 
-      printf("[%ld] RUU_num=%d, RUU_head=%d, RUU_tail=%d, FMT_dispatch_head=%d, FMT_dispatch_tail=%d, FMT_fetch=%d\n",
-             sim_cycle, RUU_num, RUU_head, RUU_tail, FMT_dispatch_head, FMT_dispatch_tail, FMT_fetch);
+        fprintf(stderr, "RUU_num=%d, RUU_head=%d, RUU_tail=%d, FMT_dispatch_head=%d, FMT_dispatch_tail=%d, FMT_fetch=%d\n",
+                sim_cycle, RUU_num, RUU_head, RUU_tail, FMT_dispatch_head, FMT_dispatch_tail, FMT_fetch);
+        fprintf(stderr, "FMT global counters: il1_count=%ld, il2_count=%ld, itlb_count=%ld, branch_penalty=%ld, dl1_count=%ld, dl2_count=%ld, dtlb_count=%ld\n",
+                FMT_global_il1_count,
+                FMT_global_il2_count,
+                FMT_global_itlb_count,
+                FMT_global_branch_penalty,
+                FMT_global_dl1_count,
+                FMT_global_dl2_count,
+                FMT_global_dtlb_count);
+        fprintf(stderr, "sFMT global counters: il1_count=%ld, il2_count=%ld, itlb_count=%ld, branch_penalty=%ld, dl1_count=%ld, dl2_count=%ld, dtlb_count=%ld\n",
+                sFMT_global_il1_count,
+                sFMT_global_il2_count,
+                sFMT_global_itlb_count,
+                sFMT_global_branch_penalty,
+                sFMT_global_dl1_count,
+                sFMT_global_dl2_count,
+                sFMT_global_dtlb_count);
+      }
 
-      printf("FMT global counters: il1_count=%ld, il2_count=%ld, itlb_count=%ld, branch_penalty=%ld, dl1_count=%ld, dl2_count=%ld, dtlb_count=%ld\n",
-             FMT_global_il1_count,
-             FMT_global_il2_count,
-             FMT_global_itlb_count,
-             FMT_global_branch_penalty,
-             FMT_global_dl1_count,
-             FMT_global_dl2_count,
-             FMT_global_dtlb_count);
-      printf("sFMT global counters: il1_count=%ld, il2_count=%ld, itlb_count=%ld, branch_penalty=%ld, dl1_count=%ld, dl2_count=%ld, dtlb_count=%ld\n",
-             sFMT_global_il1_count,
-             sFMT_global_il2_count,
-             sFMT_global_itlb_count,
-             sFMT_global_branch_penalty,
-             sFMT_global_dl1_count,
-             sFMT_global_dl2_count,
-             sFMT_global_dtlb_count);
-
-  /* go to next cycle */
+      /* go to next cycle */
       sim_cycle++;
 
       /* finish early? */

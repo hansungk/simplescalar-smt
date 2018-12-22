@@ -8,8 +8,10 @@ sim-eio
 sim-fast
 sim-mase
 sim-outorder
+sim-outorder-*
 sim-profile
 sim-safe
 sysprobe
 tags
 TAGS
+alpha_binaries/
