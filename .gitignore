@@ -15,4 +15,6 @@ sim-safe
 sysprobe
 tags
 TAGS
+*.log
+*.log.*
 alpha_binaries/

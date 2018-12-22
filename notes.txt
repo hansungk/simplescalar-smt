@@ -14,3 +14,15 @@
 
 Q.
 - FMT free()?
+
+# Workloads
+
+(fastfwd 2B, max:inst 3B)
+
+gcc: bad...
+bzip2: bpred
+mcf: bpred
+zeusmp: bad
+povray: bad
+tonto: bad
+xalanc: bad
