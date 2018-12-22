@@ -79,8 +79,8 @@
 ##
 CC = gcc
 
-OFLAGS = -fsanitize=address,leak -Og -Wall -gdwarf-4 -g3 -w -fpermissive
-# OFLAGS = -O3 -g -w -fpermissive
+OFLAGS_DEBUG = -fsanitize=address,leak -Og -Wall -gdwarf-4 -g3 -w -fpermissive
+OFLAGS = -O3 -g -w -fpermissive
 MFLAGS = `./sysprobe -flags`
 MLIBS  = `./sysprobe -libs` -lm
 ENDIAN = `./sysprobe -s`
@@ -318,6 +318,10 @@ PROGS = sim-fast$(EEXT) sim-safe$(EEXT) sim-eio$(EEXT) \
 #
 all: $(PROGS)
 	@echo "my work is done here..."
+
+debug: OFLAGS = $(OFLAGS_DEBUG)
+debug: $(PROGS)
+	@echo "my work is done here... (debug build)"
 
 config-pisa:
 	-$(RM) config.h machine.h machine.c machine.def loader.c symbol.c syscall.c
