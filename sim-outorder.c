@@ -170,11 +170,17 @@ static char *cache_dl1_opt;
 /* l1 data cache hit latency (in cycles) */
 static int cache_dl1_lat;
 
+/* perfect l1 data cache */
+static int cache_dl1_perfect;
+
 /* l2 data cache config, i.e., {<config>|none} */
 static char *cache_dl2_opt;
 
 /* l2 data cache hit latency (in cycles) */
 static int cache_dl2_lat;
+
+/* perfect l2 data cache */
+static int cache_dl2_perfect;
 
 /* l1 instruction cache config, i.e., {<config>|dl1|dl2|none} */
 static char *cache_il1_opt;
@@ -182,11 +188,17 @@ static char *cache_il1_opt;
 /* l1 instruction cache hit latency (in cycles) */
 static int cache_il1_lat;
 
+/* perfect l1 instruction cache */
+static int cache_il1_perfect;
+
 /* l2 instruction cache config, i.e., {<config>|dl1|dl2|none} */
 static char *cache_il2_opt;
 
 /* l2 instruction cache hit latency (in cycles) */
 static int cache_il2_lat;
+
+/* perfect l2 instruction cache */
+static int cache_il2_perfect;
 
 /* flush caches on system calls */
 static int flush_on_syscalls;
@@ -205,8 +217,14 @@ static int mem_bus_width;
 /* instruction TLB config, i.e., {<config>|none} */
 static char *itlb_opt;
 
+/* perfect instruction TLB */
+static int itlb_perfect;
+
 /* data TLB config, i.e., {<config>|none} */
 static char *dtlb_opt;
+
+/* perfect instruction TLB */
+static int dtlb_perfect;
 
 /* inst/data TLB miss latency (in cycles) */
 static int tlb_miss_lat;
@@ -577,9 +595,13 @@ dl1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 
   if (cache_dl2)
     {
-      /* access next level of data cache hierarchy */
-      lat = cache_access(cache_dl2, cmd, baddr, NULL, bsize,
-			 /* now */now, /* pudata */NULL, /* repl addr */NULL);
+      if (cache_dl1_perfect)
+        lat = 1;
+      else
+        /* access next level of data cache hierarchy */
+        lat = cache_access(cache_dl2, cmd, baddr, NULL, bsize,
+                           /* now */now, /* pudata */NULL, /* repl addr */NULL);
+
       if (cmd == Read)
 	return lat;
       else
@@ -592,7 +614,10 @@ dl1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
     {
       /* access main memory */
       if (cmd == Read)
-	return mem_access_latency(bsize);
+        if (cache_dl1_perfect)
+          return 1;
+        else
+          return mem_access_latency(bsize);
       else
 	{
 	  /* FIXME: unlimited write buffers */
@@ -611,7 +636,10 @@ dl2_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 {
   /* this is a miss to the lowest level, so access main memory */
   if (cmd == Read)
-    return mem_access_latency(bsize);
+    if (cache_dl2_perfect)
+      return 0;
+    else
+      return mem_access_latency(bsize);
   else
     {
       /* FIXME: unlimited write buffers */
@@ -631,9 +659,12 @@ il1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 
 if (cache_il2)
     {
-      /* access next level of inst cache hierarchy */
-      lat = cache_access(cache_il2, cmd, baddr, NULL, bsize,
-			 /* now */now, /* pudata */NULL, /* repl addr */NULL);
+      if (cache_il1_perfect)
+        return 1;
+      else
+        /* access next level of inst cache hierarchy */
+        lat = cache_access(cache_il2, cmd, baddr, NULL, bsize,
+                           /* now */now, /* pudata */NULL, /* repl addr */NULL);
 
       if (cmd == Read)
 	return lat;
@@ -644,7 +675,10 @@ if (cache_il2)
     {
       /* access main memory */
       if (cmd == Read)
-	return mem_access_latency(bsize);
+        if (cache_il1_perfect)
+          return 1;
+        else
+          return mem_access_latency(bsize);
       else
 	panic("writes to instruction memory not supported");
     }
@@ -660,7 +694,10 @@ il2_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 {
   /* this is a miss to the lowest level, so access main memory */
   if (cmd == Read)
-    return mem_access_latency(bsize);
+    if (cache_il2_perfect)
+      return 0;
+    else
+      return mem_access_latency(bsize);
   else
     panic("writes to instruction memory not supported");
 
@@ -688,7 +725,10 @@ itlb_access_fn(enum mem_cmd cmd,	/* access cmd, Read or Write */
   *phy_page_ptr = 0;
 
   /* return tlb miss latency */
-  return tlb_miss_lat;
+  if (itlb_perfect)
+    return 1;
+  else
+    return tlb_miss_lat;
 }
 
 /* data cache block miss handler function */
@@ -708,7 +748,10 @@ dtlb_access_fn(enum mem_cmd cmd,	/* access cmd, Read or Write */
   *phy_page_ptr = 0;
 
   /* return tlb miss latency */
-  return tlb_miss_lat;
+  if (dtlb_perfect)
+    return 1;
+  else
+    return tlb_miss_lat;
 }
 
 
@@ -911,6 +954,10 @@ sim_reg_options(struct opt_odb_t *odb)
 	      &cache_dl1_lat, /* default */1,
 	      /* print */TRUE, /* format */NULL);
 
+  opt_reg_flag(odb, "-cache:dl1perfect",
+               "perfect l1 data cache",
+               &cache_dl1_perfect, /* default */FALSE, /* print */TRUE, NULL);
+
   opt_reg_string(odb, "-cache:dl2",
 		 "l2 data cache config, i.e., {<config>|none}",
 		 &cache_dl2_opt, "ul2:1024:64:4:l",
@@ -920,6 +967,10 @@ sim_reg_options(struct opt_odb_t *odb)
 	      "l2 data cache hit latency (in cycles)",
 	      &cache_dl2_lat, /* default */6,
 	      /* print */TRUE, /* format */NULL);
+
+  opt_reg_flag(odb, "-cache:dl2perfect",
+               "perfect l2 data cache",
+               &cache_dl2_perfect, /* default */FALSE, /* print */TRUE, NULL);
 
   opt_reg_string(odb, "-cache:il1",
 		 "l1 inst cache config, i.e., {<config>|dl1|dl2|none}",
@@ -945,6 +996,10 @@ sim_reg_options(struct opt_odb_t *odb)
 	      &cache_il1_lat, /* default */1,
 	      /* print */TRUE, /* format */NULL);
 
+  opt_reg_flag(odb, "-cache:il1perfect",
+               "perfect l1 instruction cache",
+               &cache_il1_perfect, /* default */FALSE, /* print */TRUE, NULL);
+
   opt_reg_string(odb, "-cache:il2",
 		 "l2 instruction cache config, i.e., {<config>|dl2|none}",
 		 &cache_il2_opt, "dl2",
@@ -954,6 +1009,10 @@ sim_reg_options(struct opt_odb_t *odb)
 	      "l2 instruction cache hit latency (in cycles)",
 	      &cache_il2_lat, /* default */6,
 	      /* print */TRUE, /* format */NULL);
+
+  opt_reg_flag(odb, "-cache:il2perfect",
+               "perfect l2 instruction cache",
+               &cache_il2_perfect, /* default */FALSE, /* print */TRUE, NULL);
 
   opt_reg_flag(odb, "-cache:flush", "flush caches on system calls",
 	       &flush_on_syscalls, /* default */FALSE, /* print */TRUE, NULL);
@@ -979,9 +1038,17 @@ sim_reg_options(struct opt_odb_t *odb)
 		 "instruction TLB config, i.e., {<config>|none}",
 		 &itlb_opt, "itlb:16:4096:4:l", /* print */TRUE, NULL);
 
+  opt_reg_flag(odb, "-tlb:itlbperfect",
+               "perfect instruction TLB",
+               &itlb_perfect, /* default */FALSE, /* print */TRUE, NULL);
+
   opt_reg_string(odb, "-tlb:dtlb",
 		 "data TLB config, i.e., {<config>|none}",
 		 &dtlb_opt, "dtlb:32:4096:4:l", /* print */TRUE, NULL);
+
+  opt_reg_flag(odb, "-tlb:dtlbperfect",
+               "perfect data TLB",
+               &dtlb_perfect, /* default */FALSE, /* print */TRUE, NULL);
 
   opt_reg_int(odb, "-tlb:lat",
 	      "inst/data TLB miss latency (in cycles)",
