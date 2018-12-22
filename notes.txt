@@ -9,3 +9,8 @@ SMT
 # Things to modify
 
 * 1 register file -> an array of register files
+
+# Things to note
+
+Instructions are executed at the switch stmt in ruu_dispatch().
+(execution before commit?)
