@@ -98,6 +98,8 @@ static unsigned int max_insts;
 /* number of insts skipped before timing starts */
 static int fastfwd_count;
 
+static int inst_scale;
+
 /* pipeline trace range and output filename */
 static int ptrace_nelt = 0;
 static char *ptrace_opts[2];
@@ -772,6 +774,9 @@ sim_reg_options(struct opt_odb_t *odb)
 	       &max_insts, /* default */0,
 	       /* print */TRUE, /* format */NULL);
 
+  opt_reg_uint(odb, "-inst_scale", "",
+	       &inst_scale, /* default */1,
+	       /* print */TRUE, /* format */NULL);
   /* trace options */
 
   opt_reg_int(odb, "-fastfwd", "number of insts skipped before timing starts",
@@ -5071,7 +5076,7 @@ sim_main(void)
      FASTFWD_COUNT insts, then turns on performance (timing) simulation */
   if (fastfwd_count > 0)
     {
-      int icount;
+      long icount;
       md_inst_t inst;			/* actual instruction bits */
       enum md_opcode op;		/* decoded opcode enum */
       md_addr_t target_PC;		/* actual next/target PC address */
@@ -5085,9 +5090,9 @@ sim_main(void)
 #endif /* HOST_HAS_QWORD */
       enum md_fault_type fault;
 
-      fprintf(stderr, "sim: ** fast forwarding %d insts **\n", fastfwd_count);
+      fprintf(stderr, "sim: ** fast forwarding %ld insts **\n", (long) fastfwd_count * inst_scale);
 
-      for (icount=0; icount < fastfwd_count; icount++)
+      for (icount=0; icount < (long) fastfwd_count * inst_scale; icount++)
 	{
 	  /* maintain $r0 semantics */
 	  regs.regs_R[MD_REG_ZERO] = 0;
@@ -5267,7 +5272,7 @@ sim_main(void)
       sim_cycle++;
 
       /* finish early? */
-      if (max_insts && sim_num_insn >= max_insts)
+      if (max_insts && sim_num_insn >= (long) max_insts * inst_scale)
 	return;
       if (program_complete) return;
     }
