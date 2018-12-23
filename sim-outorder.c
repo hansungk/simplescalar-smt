@@ -80,8 +80,24 @@
  * pipeline operations.
  */
 
+#define NUM_CONTEXTS 8
+
+/* separated states for each thread context */
+static struct context_t {
+  /* simulated registers */
+  struct regs_t regs;
+  struct mem_t *mem;
+
+  /* integer register file */
+  md_gpr_t spec_regs_R;
+  /* floating point register file */
+  md_fpr_t spec_regs_F;
+  /* miscellaneous registers */
+  md_ctrl_t spec_regs_C;
+} contexts[NUM_CONTEXTS];
+
 /* simulated registers */
-static struct regs_t regs;
+/* static struct regs_t regs; */
 
 /* simulated memory */
 static struct mem_t *mem = NULL;
@@ -1388,10 +1404,14 @@ static void fetch_init(void);
 void
 sim_init(void)
 {
+  int i;
+
   sim_num_refs = 0;
 
   /* allocate and initialize register file */
-  regs_init(&regs);
+  // regs_init(&regs);
+  for (i = 0; i < NUM_CONTEXTS; i++)
+    regs_init(&contexts[i].regs);
 
   /* allocate and initialize memory space */
   mem = mem_create("mem");
@@ -1430,8 +1450,12 @@ sim_load_prog(char *fname,		/* program to load */
 	      int argc, char **argv,	/* program arguments */
 	      char **envp)		/* program environment */
 {
+  int i;
+
   /* load program text and data, set up environment, memory, and regs */
-  ld_load_prog(fname, argc, argv, envp, &regs, mem, TRUE);
+  // ld_load_prog(fname, argc, argv, envp, &regs, mem, TRUE);
+  for (i = 0; i < NUM_CONTEXTS; i++)
+    ld_load_prog(fname, argc, argv, envp, &contexts[i].regs, mem, TRUE);
 
   /* initialize here, so symbols can be loaded */
   if (ptrace_nelt == 2)
@@ -3410,27 +3434,27 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
  */
 
 /* next program counter */
-#define SET_NPC(EXPR)           (regs.regs_NPC = (EXPR))
+#define SET_NPC(EXPR)           (regs->regs_NPC = (EXPR))
 
 /* target program counter */
 #undef  SET_TPC
 #define SET_TPC(EXPR)		(target_PC = (EXPR))
 
 /* current program counter */
-#define CPC                     (regs.regs_PC)
-#define SET_CPC(EXPR)           (regs.regs_PC = (EXPR))
+#define CPC                     (regs->regs_PC)
+#define SET_CPC(EXPR)           (regs->regs_PC = (EXPR))
 
 /* general purpose register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define GPR(N)                  (BITMAP_SET_P(use_spec_R, R_BMAP_SZ, (N))\
 				 ? spec_regs_R[N]                       \
-				 : regs.regs_R[N])
+				 : regs->regs_R[N])
 #define SET_GPR(N,EXPR)         (spec_mode				\
 				 ? ((spec_regs_R[N] = (EXPR)),		\
 				    BITMAP_SET(use_spec_R, R_BMAP_SZ, (N)),\
 				    spec_regs_R[N])			\
-				 : (regs.regs_R[N] = (EXPR)))
+				 : (regs->regs_R[N] = (EXPR)))
 
 #if defined(TARGET_PISA)
 
@@ -3439,56 +3463,56 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
    for details on this process */
 #define FPR_L(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
 				 ? spec_regs_F.l[(N)]                   \
-				 : regs.regs_F.l[(N)])
+				 : regs->regs_F.l[(N)])
 #define SET_FPR_L(N,EXPR)       (spec_mode				\
 				 ? ((spec_regs_F.l[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
 				    spec_regs_F.l[(N)])			\
-				 : (regs.regs_F.l[(N)] = (EXPR)))
+				 : (regs->regs_F.l[(N)] = (EXPR)))
 #define FPR_F(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
 				 ? spec_regs_F.f[(N)]                   \
-				 : regs.regs_F.f[(N)])
+				 : regs->regs_F.f[(N)])
 #define SET_FPR_F(N,EXPR)       (spec_mode				\
 				 ? ((spec_regs_F.f[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
 				    spec_regs_F.f[(N)])			\
-				 : (regs.regs_F.f[(N)] = (EXPR)))
+				 : (regs->regs_F.f[(N)] = (EXPR)))
 #define FPR_D(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
 				 ? spec_regs_F.d[(N) >> 1]              \
-				 : regs.regs_F.d[(N) >> 1])
+				 : regs->regs_F.d[(N) >> 1])
 #define SET_FPR_D(N,EXPR)       (spec_mode				\
 				 ? ((spec_regs_F.d[(N) >> 1] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
 				    spec_regs_F.d[(N) >> 1])		\
-				 : (regs.regs_F.d[(N) >> 1] = (EXPR)))
+				 : (regs->regs_F.d[(N) >> 1] = (EXPR)))
 
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define HI			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*hi*/0)\
 				 ? spec_regs_C.hi			\
-				 : regs.regs_C.hi)
+				 : regs->regs_C.hi)
 #define SET_HI(EXPR)		(spec_mode				\
 				 ? ((spec_regs_C.hi = (EXPR)),		\
 				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*hi*/0),\
 				    spec_regs_C.hi)			\
-				 : (regs.regs_C.hi = (EXPR)))
+				 : (regs->regs_C.hi = (EXPR)))
 #define LO			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*lo*/1)\
 				 ? spec_regs_C.lo			\
-				 : regs.regs_C.lo)
+				 : regs->regs_C.lo)
 #define SET_LO(EXPR)		(spec_mode				\
 				 ? ((spec_regs_C.lo = (EXPR)),		\
 				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*lo*/1),\
 				    spec_regs_C.lo)			\
-				 : (regs.regs_C.lo = (EXPR)))
+				 : (regs->regs_C.lo = (EXPR)))
 #define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
 				 ? spec_regs_C.fcc			\
-				 : regs.regs_C.fcc)
+				 : regs->regs_C.fcc)
 #define SET_FCC(EXPR)		(spec_mode				\
 				 ? ((spec_regs_C.fcc = (EXPR)),		\
 				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/2),\
 				    spec_regs_C.fcc)			\
-				 : (regs.regs_C.fcc = (EXPR)))
+				 : (regs->regs_C.fcc = (EXPR)))
 
 #elif defined(TARGET_ALPHA)
 
@@ -3497,48 +3521,48 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
    for details on this process */
 #define FPR_Q(N)		(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
 				 ? spec_regs_F.q[(N)]                   \
-				 : regs.regs_F.q[(N)])
+				 : regs->regs_F.q[(N)])
 #define SET_FPR_Q(N,EXPR)	(spec_mode				\
 				 ? ((spec_regs_F.q[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
 				    spec_regs_F.q[(N)])			\
-				 : (regs.regs_F.q[(N)] = (EXPR)))
+				 : (regs->regs_F.q[(N)] = (EXPR)))
 #define FPR(N)			(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
 				 ? spec_regs_F.d[(N)]			\
-				 : regs.regs_F.d[(N)])
+				 : regs->regs_F.d[(N)])
 #define SET_FPR(N,EXPR)		(spec_mode				\
 				 ? ((spec_regs_F.d[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
 				    spec_regs_F.d[(N)])			\
-				 : (regs.regs_F.d[(N)] = (EXPR)))
+				 : (regs->regs_F.d[(N)] = (EXPR)))
 
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define FPCR			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fpcr*/0)\
 				 ? spec_regs_C.fpcr			\
-				 : regs.regs_C.fpcr)
+				 : regs->regs_C.fpcr)
 #define SET_FPCR(EXPR)		(spec_mode				\
 				 ? ((spec_regs_C.fpcr = (EXPR)),	\
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fpcr*/0),\
 				    spec_regs_C.fpcr)			\
-				 : (regs.regs_C.fpcr = (EXPR)))
+				 : (regs->regs_C.fpcr = (EXPR)))
 #define UNIQ			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*uniq*/1)\
 				 ? spec_regs_C.uniq			\
-				 : regs.regs_C.uniq)
+				 : regs->regs_C.uniq)
 #define SET_UNIQ(EXPR)		(spec_mode				\
 				 ? ((spec_regs_C.uniq = (EXPR)),	\
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*uniq*/1),\
 				    spec_regs_C.uniq)			\
-				 : (regs.regs_C.uniq = (EXPR)))
+				 : (regs->regs_C.uniq = (EXPR)))
 #define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
 				 ? spec_regs_C.fcc			\
-				 : regs.regs_C.fcc)
+				 : regs->regs_C.fcc)
 #define SET_FCC(EXPR)		(spec_mode				\
 				 ? ((spec_regs_C.fcc = (EXPR)),		\
 				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/1),\
 				    spec_regs_C.fcc)			\
-				 : (regs.regs_C.fcc = (EXPR)))
+				 : (regs->regs_C.fcc = (EXPR)))
 
 #else
 #error No ISA target defined...
@@ -3587,7 +3611,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 #define SYSCALL(INST)							\
   (/* only execute system calls in non-speculative mode */		\
    (spec_mode ? panic("speculative syscall") : (void) 0),		\
-   sys_syscall(&regs, mem_access, mem, INST, TRUE))
+   sys_syscall(regs, mem_access, mem, INST, TRUE))
 
 /* default register state accessor, used by DLite */
 static char *					/* err str, NULL for no err */
@@ -3597,7 +3621,9 @@ simoo_reg_obj(struct regs_t *xregs,		/* registers to access */
 	      int reg,				/* register number */
 	      struct eval_value_t *val)		/* input, output */
 {
-  switch (rt)
+  struct regs_t *regs = &contexts[0].regs;
+
+ switch (rt)
     {
     case rt_gpr:
       if (reg < 0 || reg >= MD_NUM_IREGS)
@@ -3682,20 +3708,20 @@ simoo_reg_obj(struct regs_t *xregs,		/* registers to access */
       if (!is_write)
 	{
 	  val->type = et_addr;
-	  val->value.as_addr = regs.regs_PC;
+	  val->value.as_addr = regs->regs_PC;
 	}
       else
-	regs.regs_PC = eval_as_addr(*val);
+	regs->regs_PC = eval_as_addr(*val);
       break;
 
     case rt_NPC:
       if (!is_write)
 	{
 	  val->type = et_addr;
-	  val->value.as_addr = regs.regs_NPC;
+	  val->value.as_addr = regs->regs_NPC;
 	}
       else
-	regs.regs_NPC = eval_as_addr(*val);
+	regs->regs_NPC = eval_as_addr(*val);
       break;
 
     default:
@@ -3723,6 +3749,7 @@ ruu_dispatch(void)
   int out1, out2, in1, in2, in3;	/* output/input register names */
   md_addr_t target_PC;			/* actual next/target PC address */
   md_addr_t addr;			/* effective address, if load/store */
+  struct regs_t *regs;			/* context-specific register file */
   struct RUU_station *rs;		/* RUU station being allocated */
   struct RUU_station *lsq;		/* LSQ station for ld/st's */
   struct bpred_update_t *dir_update_ptr;/* branch predictor dir update ptr */
@@ -3742,6 +3769,9 @@ ruu_dispatch(void)
 
   made_check = FALSE;
   n_dispatched = 0;
+
+  regs = &contexts[0].regs;
+
   while (/* instruction decode B/W left? */
 	 n_dispatched < (ruu_decode_width * fetch_speed)
 	 /* RUU and LSQ not full? */
@@ -3762,7 +3792,7 @@ ruu_dispatch(void)
 
       /* get the next instruction from the IFETCH -> DISPATCH queue */
       inst = fetch_data[fetch_head].IR;
-      regs.regs_PC = fetch_data[fetch_head].regs_PC;
+      regs->regs_PC = fetch_data[fetch_head].regs_PC;
       pred_PC = fetch_data[fetch_head].pred_PC;
       dir_update_ptr = &(fetch_data[fetch_head].dir_update);
       stack_recover_idx = fetch_data[fetch_head].stack_recover_idx;
@@ -3772,7 +3802,7 @@ ruu_dispatch(void)
       MD_SET_OPCODE(op, inst);
 
       /* compute default next PC */
-      regs.regs_NPC = regs.regs_PC + sizeof(md_inst_t);
+      regs->regs_NPC = regs->regs_PC + sizeof(md_inst_t);
 
       /* drain RUU for TRAPs and system calls */
       if (MD_OP_FLAGS(op) & F_TRAP)
@@ -3787,9 +3817,9 @@ ruu_dispatch(void)
 	}
 
       /* maintain $r0 semantics (in spec and non-spec space) */
-      regs.regs_R[MD_REG_ZERO] = 0; spec_regs_R[MD_REG_ZERO] = 0;
+      regs->regs_R[MD_REG_ZERO] = 0; spec_regs_R[MD_REG_ZERO] = 0;
 #ifdef TARGET_ALPHA
-      regs.regs_F.d[MD_REG_ZERO] = 0.0; spec_regs_F.d[MD_REG_ZERO] = 0.0;
+      regs->regs_F.d[MD_REG_ZERO] = 0.0; spec_regs_F.d[MD_REG_ZERO] = 0.0;
 #endif /* TARGET_ALPHA */
 
       if (!spec_mode)
@@ -3852,16 +3882,16 @@ ruu_dispatch(void)
       if (!spec_mode && verbose)
         {
           myfprintf(stderr, "++ %10n [xor: 0x%08x] {%d} @ 0x%08p: ",
-                    sim_num_insn, md_xor_regs(&regs),
-                    inst_seq+1, regs.regs_PC);
-          md_print_insn(inst, regs.regs_PC, stderr);
+                    sim_num_insn, md_xor_regs(regs),
+                    inst_seq+1, regs->regs_PC);
+          md_print_insn(inst, regs->regs_PC, stderr);
           fprintf(stderr, "\n");
           /* fflush(stderr); */
         }
 
       if (fault != md_fault_none)
 	fatal("non-speculative fault (%d) detected @ 0x%08p",
-	      fault, regs.regs_PC);
+	      fault, regs->regs_PC);
 
       /* update memory access stats */
       if (MD_OP_FLAGS(op) & F_MEM)
@@ -3880,14 +3910,14 @@ ruu_dispatch(void)
 	    }
 	}
 
-      br_taken = (regs.regs_NPC != (regs.regs_PC + sizeof(md_inst_t)));
-      br_pred_taken = (pred_PC != (regs.regs_PC + sizeof(md_inst_t)));
+      br_taken = (regs->regs_NPC != (regs->regs_PC + sizeof(md_inst_t)));
+      br_pred_taken = (pred_PC != (regs->regs_PC + sizeof(md_inst_t)));
 
       /* Check for perfection prediction inconsistencies. */
-      if (pred_PC != regs.regs_NPC && pred_perfect)
+      if (pred_PC != regs->regs_NPC && pred_perfect)
         {
-      	  pred_PC = regs.regs_NPC;
-	  fetch_pred_PC = fetch_regs_PC = regs.regs_NPC;
+      	  pred_PC = regs->regs_NPC;
+	  fetch_pred_PC = fetch_regs_PC = regs->regs_NPC;
 	  fetch_head = (ruu_ifq_size-1);
 	  fetch_num = 1;
 	  fetch_tail = 0;
@@ -3908,7 +3938,7 @@ ruu_dispatch(void)
 	  ruu_fetch_issue_delay += ruu_branch_penalty;
 
           if (mf_compat) {
-	    fetch_pred_PC = fetch_regs_PC = regs.regs_NPC;
+	    fetch_pred_PC = fetch_regs_PC = regs->regs_NPC;
 	    fetch_redirected = TRUE;
 	    misfetch_only_count++;
           }
@@ -3944,8 +3974,8 @@ ruu_dispatch(void)
           rs->slip = sim_cycle - 1;
 	  rs->IR = inst;
 	  rs->op = op;
-	  rs->PC = regs.regs_PC;
-	  rs->next_PC = regs.regs_NPC; rs->pred_PC = pred_PC;
+	  rs->PC = regs->regs_PC;
+	  rs->next_PC = regs->regs_NPC; rs->pred_PC = pred_PC;
 	  rs->in_LSQ = FALSE;
 	  rs->ea_comp = FALSE;
 	  rs->recover_inst = FALSE;
@@ -3970,8 +4000,8 @@ ruu_dispatch(void)
               lsq->slip = sim_cycle - 1;
 	      lsq->IR = inst;
 	      lsq->op = op;
-	      lsq->PC = regs.regs_PC;
-	      lsq->next_PC = regs.regs_NPC; lsq->pred_PC = pred_PC;
+	      lsq->PC = regs->regs_PC;
+	      lsq->next_PC = regs->regs_NPC; lsq->pred_PC = pred_PC;
 	      lsq->in_LSQ = TRUE;
 	      lsq->ea_comp = FALSE;
 	      lsq->recover_inst = FALSE;
@@ -4092,31 +4122,31 @@ ruu_dispatch(void)
 	      if (pred && bpred_spec_update == spec_ID)
 		{
 		  bpred_update(pred,
-			       /* branch address */regs.regs_PC,
-			       /* actual target address */regs.regs_NPC,
-			       /* taken? */regs.regs_NPC != (regs.regs_PC +
+			       /* branch address */regs->regs_PC,
+			       /* actual target address */regs->regs_NPC,
+			       /* taken? */regs->regs_NPC != (regs->regs_PC +
 						       sizeof(md_inst_t)),
-			       /* pred taken? */pred_PC != (regs.regs_PC +
+			       /* pred taken? */pred_PC != (regs->regs_PC +
 							sizeof(md_inst_t)),
-			       /* correct pred? */pred_PC == regs.regs_NPC,
+			       /* correct pred? */pred_PC == regs->regs_NPC,
 			       /* opcode */op,
 			       /* predictor update ptr */&rs->dir_update);
 		}
 	    }
 
 	  /* is the trace generator trasitioning into mis-speculation mode? */
-	  if (pred_PC != regs.regs_NPC && !fetch_redirected)
+	  if (pred_PC != regs->regs_NPC && !fetch_redirected)
 	    {
 	      /* entering mis-speculation mode, indicate this and save PC */
 	      spec_mode = TRUE;
 	      rs->recover_inst = TRUE;
-	      recover_PC = regs.regs_NPC;
+	      recover_PC = regs->regs_NPC;
 	    }
 	}
 
       /* entered decode/allocate stage, indicate in pipe trace */
       ptrace_newstage(pseq, PST_DISPATCH,
-		      (pred_PC != regs.regs_NPC) ? PEV_MPOCCURED : 0);
+		      (pred_PC != regs->regs_NPC) ? PEV_MPOCCURED : 0);
       if (op == MD_NOP_OP)
 	{
 	  /* end of the line */
@@ -4134,7 +4164,7 @@ ruu_dispatch(void)
 	  delta = newval - pcstat_lastvals[i];
 	  if (delta != 0)
 	    {
-	      stat_add_samples(pcstat_sdists[i], regs.regs_PC, delta);
+	      stat_add_samples(pcstat_sdists[i], regs->regs_PC, delta);
 	      pcstat_lastvals[i] = newval;
 	    }
 	}
@@ -4148,7 +4178,7 @@ ruu_dispatch(void)
       if (dlite_check_break(pred_PC,
 			    is_write ? ACCESS_WRITE : ACCESS_READ,
 			    addr, sim_num_insn, sim_cycle))
-	dlite_main(regs.regs_PC, pred_PC, sim_cycle, &regs, mem);
+	dlite_main(regs->regs_PC, pred_PC, sim_cycle, regs, mem);
     }
 
   /* need to enter DLite at least once per cycle */
@@ -4157,7 +4187,7 @@ ruu_dispatch(void)
       if (dlite_check_break(/* no next PC */0,
 			    is_write ? ACCESS_WRITE : ACCESS_READ,
 			    addr, sim_num_insn, sim_cycle))
-	dlite_main(regs.regs_PC, /* no next PC */0, sim_cycle, &regs, mem);
+	dlite_main(regs->regs_PC, /* no next PC */0, sim_cycle, regs, mem);
     }
 }
 
@@ -4454,18 +4484,20 @@ simoo_mstate_obj(FILE *stream,			/* output stream */
 void
 sim_main(void)
 {
+  struct regs_t *regs = &contexts[0].regs;
+
   /* ignore any floating point exceptions, they may occur on mis-speculated
      execution paths */
   signal(SIGFPE, SIG_IGN);
 
   /* set up program entry state */
-  regs.regs_PC = ld_prog_entry;
-  regs.regs_NPC = regs.regs_PC + sizeof(md_inst_t);
+  regs->regs_PC = ld_prog_entry;
+  regs->regs_NPC = regs->regs_PC + sizeof(md_inst_t);
 
   /* check for DLite debugger entry condition */
-  if (dlite_check_break(regs.regs_PC, /* no access */0, /* addr */0, 0, 0))
-    dlite_main(regs.regs_PC, regs.regs_PC + sizeof(md_inst_t),
-	       sim_cycle, &regs, mem);
+  if (dlite_check_break(regs->regs_PC, /* no access */0, /* addr */0, 0, 0))
+    dlite_main(regs->regs_PC, regs->regs_PC + sizeof(md_inst_t),
+	       sim_cycle, regs, mem);
 
   /* fast forward simulator loop, performs functional simulation for
      FASTFWD_COUNT insts, then turns on performance (timing) simulation */
@@ -4490,13 +4522,13 @@ sim_main(void)
       for (icount=0; icount < fastfwd_count; icount++)
 	{
 	  /* maintain $r0 semantics */
-	  regs.regs_R[MD_REG_ZERO] = 0;
+	  regs->regs_R[MD_REG_ZERO] = 0;
 #ifdef TARGET_ALPHA
-	  regs.regs_F.d[MD_REG_ZERO] = 0.0;
+	  regs->regs_F.d[MD_REG_ZERO] = 0.0;
 #endif /* TARGET_ALPHA */
 
 	  /* get the next instruction to execute */
-	  MD_FETCH_INST(inst, mem, regs.regs_PC);
+	  MD_FETCH_INST(inst, mem, regs->regs_PC);
 
 	  /* set default reference address */
 	  addr = 0; is_write = FALSE;
@@ -4528,7 +4560,7 @@ sim_main(void)
 	    }
 
 	  if (fault != md_fault_none)
-	    fatal("fault (%d) detected @ 0x%08p", fault, regs.regs_PC);
+	    fatal("fault (%d) detected @ 0x%08p", fault, regs->regs_PC);
 
 	  /* update memory access stats */
 	  if (MD_OP_FLAGS(op) & F_MEM)
@@ -4538,23 +4570,23 @@ sim_main(void)
 	    }
 
 	  /* check for DLite debugger entry condition */
-	  if (dlite_check_break(regs.regs_NPC,
+	  if (dlite_check_break(regs->regs_NPC,
 				is_write ? ACCESS_WRITE : ACCESS_READ,
 				addr, sim_num_insn, sim_num_insn))
-	    dlite_main(regs.regs_PC, regs.regs_NPC, sim_num_insn, &regs, mem);
+	    dlite_main(regs->regs_PC, regs->regs_NPC, sim_num_insn, regs, mem);
 
 	  /* go to the next instruction */
-	  regs.regs_PC = regs.regs_NPC;
-	  regs.regs_NPC += sizeof(md_inst_t);
+	  regs->regs_PC = regs->regs_NPC;
+	  regs->regs_NPC += sizeof(md_inst_t);
 	}
     }
 
   fprintf(stderr, "sim: ** starting performance simulation **\n");
 
   /* set up timing simulation entry state */
-  fetch_regs_PC = regs.regs_PC - sizeof(md_inst_t);
-  fetch_pred_PC = regs.regs_PC;
-  regs.regs_PC = regs.regs_PC - sizeof(md_inst_t);
+  fetch_regs_PC = regs->regs_PC - sizeof(md_inst_t);
+  fetch_pred_PC = regs->regs_PC;
+  regs->regs_PC = regs->regs_PC - sizeof(md_inst_t);
 
   /* main simulator loop, NOTE: the pipe stages are traverse in reverse order
      to eliminate this/next state synchronization and relaxation problems */
@@ -4569,7 +4601,7 @@ sim_main(void)
 	panic("LSQ_head/LSQ_tail wedged");
 
       /* check if pipetracing is still active */
-      ptrace_check_active(regs.regs_PC, sim_num_insn, sim_cycle);
+      ptrace_check_active(regs->regs_PC, sim_num_insn, sim_cycle);
 
       /* indicate new cycle in pipetrace */
       ptrace_newcycle(sim_cycle);
