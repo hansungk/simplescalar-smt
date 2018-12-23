@@ -4411,13 +4411,13 @@ ruu_fetch(void)
   md_inst_t inst;
   int stack_recover_idx;
   int branch_cnt;
-  static int ctx_id = 0;
+  static int pivot = 0;
   enum md_opcode op;
   struct context_t *ctx;
   struct mem_t *mem;
 
   /* points to the current thread context being fetched */
-  ctx = &contexts[ctx_id];
+  ctx = &contexts[pivot];
   mem = ctx->mem;
 
   for (i=0, branch_cnt=0;
@@ -4429,6 +4429,8 @@ ruu_fetch(void)
        && !done;
        i++)
     {
+      int ctx_id;
+
       /* fetch an instruction at the next predicted fetch address */
       ctx->fetch_regs_PC = ctx->fetch_pred_PC;
 
@@ -4552,10 +4554,20 @@ ruu_fetch(void)
       /* adjust instruction fetch queue */
       ctx->fetch_tail = (ctx->fetch_tail + 1) & (ruu_ifq_size - 1);
       ctx->fetch_num++;
+
+      /* SMT: share fetch bandwidth: fetch from one thread in the first half, and
+         from another in the second half */
+      ctx_id = pivot;
+      if (i >= (ruu_decode_width * fetch_speed) / 2)
+        {
+          ctx_id = (pivot + NUM_CONTEXTS / 2) % NUM_CONTEXTS;
+        }
+      ctx = &contexts[ctx_id];
+      mem = ctx->mem;
     }
 
   /* update the index of which context to be fetched next FIXME */
-  ctx_id = (ctx_id + 1) % NUM_CONTEXTS;
+  pivot = (pivot + 1) % NUM_CONTEXTS;
 }
 
 /* default machine state accessor, used by DLite */
