@@ -6,11 +6,16 @@ sim-cache
 sim-cheetah
 sim-eio
 sim-fast
+sim-fast-*
 sim-mase
 sim-outorder
+sim-outorder-*
 sim-profile
 sim-safe
 sysprobe
 tags
 TAGS
 test_workload/
+*.log
+*.log.*
+alpha_binaries
