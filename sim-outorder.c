@@ -88,6 +88,14 @@ static struct context_t {
   struct regs_t regs;
   struct regs_t spec_regs;
   struct mem_t *mem;
+
+  /* program counter */
+  md_addr_t pred_PC;
+  md_addr_t recover_PC;
+
+  /* fetch unit next fetch address */
+  md_addr_t fetch_regs_PC;
+  md_addr_t fetch_pred_PC;
 } contexts[NUM_CONTEXTS];
 
 /* simulated registers */
@@ -2979,12 +2987,12 @@ static struct spec_mem_ent *bucket_free_list = NULL;
 
 
 /* program counter */
-static md_addr_t pred_PC;
-static md_addr_t recover_PC;
+// static md_addr_t pred_PC;
+// static md_addr_t recover_PC;
 
 /* fetch unit next fetch address */
-static md_addr_t fetch_regs_PC;
-static md_addr_t fetch_pred_PC;
+// static md_addr_t fetch_regs_PC;
+// static md_addr_t fetch_pred_PC;
 
 /* IFETCH -> DISPATCH instruction queue definition */
 struct fetch_rec {
@@ -3051,7 +3059,7 @@ tracer_recover(void)
   /* reset IFETCH state */
   fetch_num = 0;
   fetch_tail = fetch_head = 0;
-  fetch_pred_PC = fetch_regs_PC = recover_PC;
+  contexts[0].fetch_pred_PC = contexts[0].fetch_regs_PC = contexts[0].recover_PC;
 }
 
 /* initialize the speculative instruction state generator state */
@@ -3798,7 +3806,7 @@ ruu_dispatch(void)
       /* get the next instruction from the IFETCH -> DISPATCH queue */
       inst = fetch_data[fetch_head].IR;
       regs->regs_PC = fetch_data[fetch_head].regs_PC;
-      pred_PC = fetch_data[fetch_head].pred_PC;
+      contexts[0].pred_PC = fetch_data[fetch_head].pred_PC;
       dir_update_ptr = &(fetch_data[fetch_head].dir_update);
       stack_recover_idx = fetch_data[fetch_head].stack_recover_idx;
       pseq = fetch_data[fetch_head].ptrace_seq;
@@ -3916,13 +3924,13 @@ ruu_dispatch(void)
 	}
 
       br_taken = (regs->regs_NPC != (regs->regs_PC + sizeof(md_inst_t)));
-      br_pred_taken = (pred_PC != (regs->regs_PC + sizeof(md_inst_t)));
+      br_pred_taken = (contexts[0].pred_PC != (regs->regs_PC + sizeof(md_inst_t)));
 
       /* Check for perfection prediction inconsistencies. */
-      if (pred_PC != regs->regs_NPC && pred_perfect)
+      if (contexts[0].pred_PC != regs->regs_NPC && pred_perfect)
         {
-      	  pred_PC = regs->regs_NPC;
-	  fetch_pred_PC = fetch_regs_PC = regs->regs_NPC;
+      	  contexts[0].pred_PC = regs->regs_NPC;
+	  contexts[0].fetch_pred_PC = contexts[0].fetch_regs_PC = regs->regs_NPC;
 	  fetch_head = (ruu_ifq_size-1);
 	  fetch_num = 1;
 	  fetch_tail = 0;
@@ -3932,7 +3940,7 @@ ruu_dispatch(void)
        * predicted target doesn't match the computed target.  Just update
        * the PC values and do a fetch squash. */
       else if ((MD_OP_FLAGS(op) & (F_CTRL|F_DIRJMP)) == (F_CTRL|F_DIRJMP) 
-	      && target_PC != pred_PC && br_pred_taken)
+	      && target_PC != contexts[0].pred_PC && br_pred_taken)
 	{
           misfetch_count++;
           recovery_count++;
@@ -3943,12 +3951,12 @@ ruu_dispatch(void)
 	  ruu_fetch_issue_delay += ruu_branch_penalty;
 
           if (mf_compat) {
-	    fetch_pred_PC = fetch_regs_PC = regs->regs_NPC;
+	    contexts[0].fetch_pred_PC = contexts[0].fetch_regs_PC = regs->regs_NPC;
 	    fetch_redirected = TRUE;
 	    misfetch_only_count++;
           }
           else {
-	    fetch_pred_PC = fetch_regs_PC = target_PC;
+	    contexts[0].fetch_pred_PC = contexts[0].fetch_regs_PC = target_PC;
 	    if (br_taken) {
 	      fetch_redirected = TRUE;
 	      misfetch_only_count++;
@@ -3980,7 +3988,7 @@ ruu_dispatch(void)
 	  rs->IR = inst;
 	  rs->op = op;
 	  rs->PC = regs->regs_PC;
-	  rs->next_PC = regs->regs_NPC; rs->pred_PC = pred_PC;
+	  rs->next_PC = regs->regs_NPC; rs->pred_PC = contexts[0].pred_PC;
 	  rs->in_LSQ = FALSE;
 	  rs->ea_comp = FALSE;
 	  rs->recover_inst = FALSE;
@@ -4006,7 +4014,7 @@ ruu_dispatch(void)
 	      lsq->IR = inst;
 	      lsq->op = op;
 	      lsq->PC = regs->regs_PC;
-	      lsq->next_PC = regs->regs_NPC; lsq->pred_PC = pred_PC;
+	      lsq->next_PC = regs->regs_NPC; lsq->pred_PC = contexts[0].pred_PC;
 	      lsq->in_LSQ = TRUE;
 	      lsq->ea_comp = FALSE;
 	      lsq->recover_inst = FALSE;
@@ -4131,27 +4139,27 @@ ruu_dispatch(void)
 			       /* actual target address */regs->regs_NPC,
 			       /* taken? */regs->regs_NPC != (regs->regs_PC +
 						       sizeof(md_inst_t)),
-			       /* pred taken? */pred_PC != (regs->regs_PC +
+			       /* pred taken? */contexts[0].pred_PC != (regs->regs_PC +
 							sizeof(md_inst_t)),
-			       /* correct pred? */pred_PC == regs->regs_NPC,
+			       /* correct pred? */contexts[0].pred_PC == regs->regs_NPC,
 			       /* opcode */op,
 			       /* predictor update ptr */&rs->dir_update);
 		}
 	    }
 
 	  /* is the trace generator trasitioning into mis-speculation mode? */
-	  if (pred_PC != regs->regs_NPC && !fetch_redirected)
+	  if (contexts[0].pred_PC != regs->regs_NPC && !fetch_redirected)
 	    {
 	      /* entering mis-speculation mode, indicate this and save PC */
 	      spec_mode = TRUE;
 	      rs->recover_inst = TRUE;
-	      recover_PC = regs->regs_NPC;
+	      contexts[0].recover_PC = regs->regs_NPC;
 	    }
 	}
 
       /* entered decode/allocate stage, indicate in pipe trace */
       ptrace_newstage(pseq, PST_DISPATCH,
-		      (pred_PC != regs->regs_NPC) ? PEV_MPOCCURED : 0);
+		      (contexts[0].pred_PC != regs->regs_NPC) ? PEV_MPOCCURED : 0);
       if (op == MD_NOP_OP)
 	{
 	  /* end of the line */
@@ -4180,10 +4188,10 @@ ruu_dispatch(void)
 
       /* check for DLite debugger entry condition */
       made_check = TRUE;
-      if (dlite_check_break(pred_PC,
+      if (dlite_check_break(contexts[0].pred_PC,
 			    is_write ? ACCESS_WRITE : ACCESS_READ,
 			    addr, sim_num_insn, sim_cycle))
-	dlite_main(regs->regs_PC, pred_PC, sim_cycle, regs, mem);
+	dlite_main(regs->regs_PC, contexts[0].pred_PC, sim_cycle, regs, mem);
     }
 
   /* need to enter DLite at least once per cycle */
@@ -4229,10 +4237,10 @@ fetch_dump(FILE *stream)			/* output stream */
   fprintf(stream, "** fetch stage state **\n");
 
   fprintf(stream, "spec_mode: %s\n", spec_mode ? "t" : "f");
-  myfprintf(stream, "pred_PC: 0x%08p, recover_PC: 0x%08p\n",
-	    pred_PC, recover_PC);
-  myfprintf(stream, "fetch_regs_PC: 0x%08p, fetch_pred_PC: 0x%08p\n",
-	    fetch_regs_PC, fetch_pred_PC);
+  myfprintf(stream, "contexts[0].pred_PC: 0x%08p, contexts[0].recover_PC: 0x%08p\n",
+	    contexts[0].pred_PC, contexts[0].recover_PC);
+  myfprintf(stream, "contexts[0].fetch_regs_PC: 0x%08p, contexts[0].fetch_pred_PC: 0x%08p\n",
+	    contexts[0].fetch_regs_PC, contexts[0].fetch_pred_PC);
   fprintf(stream, "\n");
 
   fprintf(stream, "** fetch queue contents **\n");
@@ -4281,15 +4289,15 @@ ruu_fetch(void)
        i++)
     {
       /* fetch an instruction at the next predicted fetch address */
-      fetch_regs_PC = fetch_pred_PC;
+      contexts[0].fetch_regs_PC = contexts[0].fetch_pred_PC;
 
       /* is this a bogus text address? (can happen on mis-spec path) */
-      if (1 || ld_text_base <= fetch_regs_PC
-	  && fetch_regs_PC < (ld_text_base+ld_text_size)
-	  && !(fetch_regs_PC & (sizeof(md_inst_t)-1)))
+      if (1 || ld_text_base <= contexts[0].fetch_regs_PC
+	  && contexts[0].fetch_regs_PC < (ld_text_base+ld_text_size)
+	  && !(contexts[0].fetch_regs_PC & (sizeof(md_inst_t)-1)))
 	{
 	  /* read instruction from memory */
-	  MD_FETCH_INST(inst, mem, fetch_regs_PC);
+	  MD_FETCH_INST(inst, mem, contexts[0].fetch_regs_PC);
 
 	  /* address is within program text, read instruction from memory */
 	  lat = cache_il1_lat;
@@ -4297,7 +4305,7 @@ ruu_fetch(void)
 	    {
 	      /* access the I-cache */
 	      lat =
-		cache_access(cache_il1, Read, IACOMPRESS(fetch_regs_PC),
+		cache_access(cache_il1, Read, IACOMPRESS(contexts[0].fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (lat > cache_il1_lat)
@@ -4309,7 +4317,7 @@ ruu_fetch(void)
 	      /* access the I-TLB, NOTE: this code will initiate
 		 speculative TLB misses */
 	      tlb_lat =
-		cache_access(itlb, Read, IACOMPRESS(fetch_regs_PC),
+		cache_access(itlb, Read, IACOMPRESS(contexts[0].fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (tlb_lat > 1)
@@ -4346,9 +4354,9 @@ ruu_fetch(void)
 	     result for branches (assumes pre-decode bits); NOTE: returned
 	     value may be 1 if bpred can only predict a direction */
 	  if (MD_OP_FLAGS(op) & F_CTRL)
-	    fetch_pred_PC =
+	    contexts[0].fetch_pred_PC =
 	      bpred_lookup(pred,
-			   /* branch address */fetch_regs_PC,
+			   /* branch address */contexts[0].fetch_regs_PC,
 			   /* target address *//* FIXME: not computed */0,
 			   /* opcode */op,
 			   /* call? */MD_IS_CALL(op),
@@ -4356,13 +4364,13 @@ ruu_fetch(void)
 			   /* updt */&(fetch_data[fetch_tail].dir_update),
 			   /* RSB index */&stack_recover_idx);
 	  else
-	    fetch_pred_PC = 0;
+	    contexts[0].fetch_pred_PC = 0;
 
 	  /* valid address returned from branch predictor? */
-	  if (!fetch_pred_PC)
+	  if (!contexts[0].fetch_pred_PC)
 	    {
 	      /* no predicted taken target, attempt not taken target */
-	      fetch_pred_PC = fetch_regs_PC + sizeof(md_inst_t);
+	      contexts[0].fetch_pred_PC = contexts[0].fetch_regs_PC + sizeof(md_inst_t);
 	    }
 	  else
 	    {
@@ -4376,13 +4384,13 @@ ruu_fetch(void)
 	{
 	  /* no predictor, just default to predict not taken, and
 	     continue fetching instructions linearly */
-	  fetch_pred_PC = fetch_regs_PC + sizeof(md_inst_t);
+	  contexts[0].fetch_pred_PC = contexts[0].fetch_regs_PC + sizeof(md_inst_t);
 	}
 
       /* commit this instruction to the IFETCH -> DISPATCH queue */
       fetch_data[fetch_tail].IR = inst;
-      fetch_data[fetch_tail].regs_PC = fetch_regs_PC;
-      fetch_data[fetch_tail].pred_PC = fetch_pred_PC;
+      fetch_data[fetch_tail].regs_PC = contexts[0].fetch_regs_PC;
+      fetch_data[fetch_tail].pred_PC = contexts[0].fetch_pred_PC;
       fetch_data[fetch_tail].stack_recover_idx = stack_recover_idx;
       fetch_data[fetch_tail].ptrace_seq = ptrace_seq++;
 
@@ -4594,8 +4602,8 @@ sim_main(void)
   fprintf(stderr, "sim: ** starting performance simulation **\n");
 
   /* set up timing simulation entry state */
-  fetch_regs_PC = regs->regs_PC - sizeof(md_inst_t);
-  fetch_pred_PC = regs->regs_PC;
+  contexts[0].fetch_regs_PC = regs->regs_PC - sizeof(md_inst_t);
+  contexts[0].fetch_pred_PC = regs->regs_PC;
   regs->regs_PC = regs->regs_PC - sizeof(md_inst_t);
 
   /* main simulator loop, NOTE: the pipe stages are traverse in reverse order
