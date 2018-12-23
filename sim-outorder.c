@@ -94,7 +94,7 @@ static struct context_t {
 /* static struct regs_t regs; */
 
 /* simulated memory */
-static struct mem_t *mem = NULL;
+// static struct mem_t *mem = NULL;
 
 
 /*
@@ -1381,7 +1381,7 @@ sim_reg_stats(struct stat_sdb_t *sdb)   /* stats database */
 					/* print fn */NULL);
     }
   ld_reg_stats(sdb);
-  mem_reg_stats(mem, sdb);
+  mem_reg_stats(contexts[0].mem, sdb);
 }
 
 /* forward declarations */
@@ -1408,8 +1408,13 @@ sim_init(void)
     regs_init(&contexts[i].regs);
 
   /* allocate and initialize memory space */
-  mem = mem_create("mem");
-  mem_init(mem);
+  // mem = mem_create("mem");
+  // mem_init(mem);
+  for (i = 0; i < NUM_CONTEXTS; i++)
+    {
+      contexts[i].mem = mem_create("mem");
+      mem_init(contexts[i].mem);
+    }
 }
 
 /* default register state accessor, used by DLite */
@@ -1449,7 +1454,7 @@ sim_load_prog(char *fname,		/* program to load */
   /* load program text and data, set up environment, memory, and regs */
   // ld_load_prog(fname, argc, argv, envp, &regs, mem, TRUE);
   for (i = 0; i < NUM_CONTEXTS; i++)
-    ld_load_prog(fname, argc, argv, envp, &contexts[i].regs, mem, TRUE);
+    ld_load_prog(fname, argc, argv, envp, &contexts[i].regs, contexts[i].mem, TRUE);
 
   /* initialize here, so symbols can be loaded */
   if (ptrace_nelt == 2)
@@ -3747,6 +3752,7 @@ ruu_dispatch(void)
   md_addr_t addr;			/* effective address, if load/store */
   struct regs_t *regs;			/* context-specific register file */
   struct regs_t *spec_regs;		/* context-specific speculative register file */
+  struct mem_t *mem;			/* context-specific register file */
   struct RUU_station *rs;		/* RUU station being allocated */
   struct RUU_station *lsq;		/* LSQ station for ld/st's */
   struct bpred_update_t *dir_update_ptr;/* branch predictor dir update ptr */
@@ -3769,6 +3775,7 @@ ruu_dispatch(void)
 
   regs = &contexts[0].regs;
   spec_regs = &contexts[0].spec_regs;
+  mem = contexts[0].mem;
 
   while (/* instruction decode B/W left? */
 	 n_dispatched < (ruu_decode_width * fetch_speed)
@@ -4260,6 +4267,9 @@ ruu_fetch(void)
   int stack_recover_idx;
   int branch_cnt;
   enum md_opcode op;
+  struct mem_t *mem;
+
+  mem = contexts[0].mem;
 
   for (i=0, branch_cnt=0;
        /* fetch up to as many instruction as the DISPATCH stage can decode */
@@ -4484,6 +4494,7 @@ sim_main(void)
 {
   struct regs_t *regs = &contexts[0].regs;
   struct regs_t *spec_regs = &contexts[0].spec_regs;
+  struct mem_t *mem = &contexts[0].mem;
 
   /* ignore any floating point exceptions, they may occur on mis-speculated
      execution paths */
