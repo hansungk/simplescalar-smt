@@ -80,7 +80,7 @@
  * pipeline operations.
  */
 
-#define NUM_CONTEXTS 8
+#define NUM_CONTEXTS 2
 
 /* separated states for each thread context */
 static struct context_t {
@@ -89,6 +89,10 @@ static struct context_t {
   struct regs_t spec_regs;
   struct mem_t *mem;
 
+  BITMAP_TYPE(MD_NUM_IREGS, use_spec_R);
+  BITMAP_TYPE(MD_NUM_IREGS, use_spec_F);
+  BITMAP_TYPE(MD_NUM_IREGS, use_spec_C);
+
   /* program counter */
   md_addr_t pred_PC;
   md_addr_t recover_PC;
@@ -96,6 +100,13 @@ static struct context_t {
   /* fetch unit next fetch address */
   md_addr_t fetch_regs_PC;
   md_addr_t fetch_pred_PC;
+
+  /* Separated per-thread fetch buffer. Shared fetch buffer
+     complicates thread-specific fetch squashing on misfetch, so we
+     maintain separate fetch buffer for each thread. */
+  struct fetch_rec *fetch_data;	/* IFETCH -> DISPATCH inst queue */
+  int fetch_num;			/* num entries in IF -> DIS queue */
+  int fetch_tail, fetch_head;	/* head and tail pointers of queue */
 } contexts[NUM_CONTEXTS];
 
 /* simulated registers */
@@ -2422,7 +2433,7 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
  */
 
 /* forward declarations */
-static void tracer_recover(void);
+static void tracer_recover(int ctx_id);
 
 /* writeback completed operation results from the functional units to RUU,
    at this point, the output dependency chains of completing instructions
@@ -2453,7 +2464,7 @@ ruu_writeback(void)
 
 	  /* recover processor state and reinit fetch to correct path */
 	  ruu_recover(rs - RUU);
-	  tracer_recover();
+	  tracer_recover(0); /* FIXME */
 	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
           recovery_count++;
 
@@ -3002,19 +3013,20 @@ struct fetch_rec {
   int stack_recover_idx;		/* branch predictor RSB index */
   unsigned int ptrace_seq;		/* print trace sequence id */
 };
-static struct fetch_rec *fetch_data;	/* IFETCH -> DISPATCH inst queue */
-static int fetch_num;			/* num entries in IF -> DIS queue */
-static int fetch_tail, fetch_head;	/* head and tail pointers of queue */
+/* static struct fetch_rec *fetch_data;	/\* IFETCH -> DISPATCH inst queue *\/ */
+/* static int fetch_num;			/\* num entries in IF -> DIS queue *\/ */
+/* static int fetch_tail, fetch_head;	/\* head and tail pointers of queue *\/ */
 
 /* recover instruction trace generator state to precise state state immediately
    before the first mis-predicted branch; this is accomplished by resetting
    all register value copied-on-write bitmasks are reset, and the speculative
    memory hash table is cleared */
 static void
-tracer_recover(void)
+tracer_recover(int ctx_id)
 {
   int i;
   struct spec_mem_ent *ent, *ent_next;
+  struct context_t *ctx = &contexts[ctx_id];
 
   /* better be in mis-speculative trace generation mode */
   if (!spec_mode)
@@ -3045,21 +3057,21 @@ tracer_recover(void)
   /* if pipetracing, indicate squash of instructions in the inst fetch queue */
   if (ptrace_active)
     {
-      while (fetch_num != 0)
+      while (ctx->fetch_num != 0)
 	{
 	  /* squash the next instruction from the IFETCH -> DISPATCH queue */
-	  ptrace_endinst(fetch_data[fetch_head].ptrace_seq);
+	  ptrace_endinst(ctx->fetch_data[ctx->fetch_head].ptrace_seq);
 
 	  /* consume instruction from IFETCH -> DISPATCH queue */
-	  fetch_head = (fetch_head+1) & (ruu_ifq_size - 1);
-	  fetch_num--;
+	  ctx->fetch_head = (ctx->fetch_head+1) & (ruu_ifq_size - 1);
+	  ctx->fetch_num--;
 	}
     }
 
   /* reset IFETCH state */
-  fetch_num = 0;
-  fetch_tail = fetch_head = 0;
-  contexts[0].fetch_pred_PC = contexts[0].fetch_regs_PC = contexts[0].recover_PC;
+  ctx->fetch_num = 0;
+  ctx->fetch_tail = ctx->fetch_head = 0;
+  ctx->fetch_pred_PC = ctx->fetch_regs_PC = ctx->recover_PC;
 }
 
 /* initialize the speculative instruction state generator state */
@@ -3769,7 +3781,7 @@ ruu_dispatch(void)
   int is_write;				/* store? */
   int made_check;			/* used to ensure DLite entry */
   int br_taken, br_pred_taken;		/* if br, taken?  predicted taken? */
-  int fetch_redirected = FALSE;
+  int fetch_redirected[NUM_CONTEXTS] = {FALSE}; /* FIXME local, so maybe not needed to be array, but for safety */
   byte_t temp_byte = 0;			/* temp variable for spec mem access */
   half_t temp_half = 0;			/* " ditto " */
   word_t temp_word = 0;			/* " ditto " */
@@ -3777,20 +3789,25 @@ ruu_dispatch(void)
   qword_t temp_qword = 0;		/* " ditto " */
 #endif /* HOST_HAS_QWORD */
   enum md_fault_type fault;
+  struct context_t *ctx;
+  static int ctx_id = 0;
 
   made_check = FALSE;
   n_dispatched = 0;
 
-  regs = &contexts[0].regs;
-  spec_regs = &contexts[0].spec_regs;
-  mem = contexts[0].mem;
+  ctx = &contexts[ctx_id];
+  regs = &ctx->regs;
+  spec_regs = &ctx->spec_regs;
+  mem = ctx->mem;
+
+  /* printf("dispatching context %d\n", ctx_id); */
 
   while (/* instruction decode B/W left? */
 	 n_dispatched < (ruu_decode_width * fetch_speed)
 	 /* RUU and LSQ not full? */
 	 && RUU_num < RUU_size && LSQ_num < LSQ_size
 	 /* insts still available from fetch unit? */
-	 && fetch_num != 0
+	 && ctx->fetch_num != 0
 	 /* on an acceptable trace path */
 	 && (ruu_include_spec || !spec_mode))
     {
@@ -3804,12 +3821,12 @@ ruu_dispatch(void)
 	}
 
       /* get the next instruction from the IFETCH -> DISPATCH queue */
-      inst = fetch_data[fetch_head].IR;
-      regs->regs_PC = fetch_data[fetch_head].regs_PC;
-      contexts[0].pred_PC = fetch_data[fetch_head].pred_PC;
-      dir_update_ptr = &(fetch_data[fetch_head].dir_update);
-      stack_recover_idx = fetch_data[fetch_head].stack_recover_idx;
-      pseq = fetch_data[fetch_head].ptrace_seq;
+      inst = ctx->fetch_data[ctx->fetch_head].IR;
+      regs->regs_PC = ctx->fetch_data[ctx->fetch_head].regs_PC;
+      ctx->pred_PC = ctx->fetch_data[ctx->fetch_head].pred_PC;
+      dir_update_ptr = &(ctx->fetch_data[ctx->fetch_head].dir_update);
+      stack_recover_idx = ctx->fetch_data[ctx->fetch_head].stack_recover_idx;
+      pseq = ctx->fetch_data[ctx->fetch_head].ptrace_seq;
 
       /* decode the inst */
       MD_SET_OPCODE(op, inst);
@@ -3924,41 +3941,41 @@ ruu_dispatch(void)
 	}
 
       br_taken = (regs->regs_NPC != (regs->regs_PC + sizeof(md_inst_t)));
-      br_pred_taken = (contexts[0].pred_PC != (regs->regs_PC + sizeof(md_inst_t)));
+      br_pred_taken = (ctx->pred_PC != (regs->regs_PC + sizeof(md_inst_t)));
 
       /* Check for perfection prediction inconsistencies. */
-      if (contexts[0].pred_PC != regs->regs_NPC && pred_perfect)
+      if (ctx->pred_PC != regs->regs_NPC && pred_perfect)
         {
-      	  contexts[0].pred_PC = regs->regs_NPC;
-	  contexts[0].fetch_pred_PC = contexts[0].fetch_regs_PC = regs->regs_NPC;
-	  fetch_head = (ruu_ifq_size-1);
-	  fetch_num = 1;
-	  fetch_tail = 0;
-	  fetch_redirected = TRUE;
+      	  ctx->pred_PC = regs->regs_NPC;
+	  ctx->fetch_pred_PC = ctx->fetch_regs_PC = regs->regs_NPC;
+	  ctx->fetch_head = (ruu_ifq_size-1);
+	  ctx->fetch_num = 1;
+	  ctx->fetch_tail = 0;
+	  fetch_redirected[ctx_id] = TRUE;
         }
       /* Check for misfetch - we've predicted the branch taken, but our
        * predicted target doesn't match the computed target.  Just update
        * the PC values and do a fetch squash. */
       else if ((MD_OP_FLAGS(op) & (F_CTRL|F_DIRJMP)) == (F_CTRL|F_DIRJMP) 
-	      && target_PC != contexts[0].pred_PC && br_pred_taken)
+	      && target_PC != ctx->pred_PC && br_pred_taken)
 	{
           misfetch_count++;
           recovery_count++;
 
-	  fetch_head = (ruu_ifq_size-1);
-	  fetch_num = 1;
-	  fetch_tail = 0;
+	  ctx->fetch_head = (ruu_ifq_size-1);
+	  ctx->fetch_num = 1;
+	  ctx->fetch_tail = 0;
 	  ruu_fetch_issue_delay += ruu_branch_penalty;
 
           if (mf_compat) {
-	    contexts[0].fetch_pred_PC = contexts[0].fetch_regs_PC = regs->regs_NPC;
-	    fetch_redirected = TRUE;
+	    ctx->fetch_pred_PC = ctx->fetch_regs_PC = regs->regs_NPC;
+	    fetch_redirected[ctx_id] = TRUE;
 	    misfetch_only_count++;
           }
           else {
-	    contexts[0].fetch_pred_PC = contexts[0].fetch_regs_PC = target_PC;
+	    ctx->fetch_pred_PC = ctx->fetch_regs_PC = target_PC;
 	    if (br_taken) {
-	      fetch_redirected = TRUE;
+	      fetch_redirected[ctx_id] = TRUE;
 	      misfetch_only_count++;
 	    }
           }
@@ -3988,7 +4005,7 @@ ruu_dispatch(void)
 	  rs->IR = inst;
 	  rs->op = op;
 	  rs->PC = regs->regs_PC;
-	  rs->next_PC = regs->regs_NPC; rs->pred_PC = contexts[0].pred_PC;
+	  rs->next_PC = regs->regs_NPC; rs->pred_PC = ctx->pred_PC;
 	  rs->in_LSQ = FALSE;
 	  rs->ea_comp = FALSE;
 	  rs->recover_inst = FALSE;
@@ -4014,7 +4031,7 @@ ruu_dispatch(void)
 	      lsq->IR = inst;
 	      lsq->op = op;
 	      lsq->PC = regs->regs_PC;
-	      lsq->next_PC = regs->regs_NPC; lsq->pred_PC = contexts[0].pred_PC;
+	      lsq->next_PC = regs->regs_NPC; lsq->pred_PC = ctx->pred_PC;
 	      lsq->in_LSQ = TRUE;
 	      lsq->ea_comp = FALSE;
 	      lsq->recover_inst = FALSE;
@@ -4139,27 +4156,27 @@ ruu_dispatch(void)
 			       /* actual target address */regs->regs_NPC,
 			       /* taken? */regs->regs_NPC != (regs->regs_PC +
 						       sizeof(md_inst_t)),
-			       /* pred taken? */contexts[0].pred_PC != (regs->regs_PC +
+			       /* pred taken? */ctx->pred_PC != (regs->regs_PC +
 							sizeof(md_inst_t)),
-			       /* correct pred? */contexts[0].pred_PC == regs->regs_NPC,
+			       /* correct pred? */ctx->pred_PC == regs->regs_NPC,
 			       /* opcode */op,
 			       /* predictor update ptr */&rs->dir_update);
 		}
 	    }
 
 	  /* is the trace generator trasitioning into mis-speculation mode? */
-	  if (contexts[0].pred_PC != regs->regs_NPC && !fetch_redirected)
+	  if (ctx->pred_PC != regs->regs_NPC && !fetch_redirected[ctx_id])
 	    {
 	      /* entering mis-speculation mode, indicate this and save PC */
 	      spec_mode = TRUE;
 	      rs->recover_inst = TRUE;
-	      contexts[0].recover_PC = regs->regs_NPC;
+	      ctx->recover_PC = regs->regs_NPC;
 	    }
 	}
 
       /* entered decode/allocate stage, indicate in pipe trace */
       ptrace_newstage(pseq, PST_DISPATCH,
-		      (contexts[0].pred_PC != regs->regs_NPC) ? PEV_MPOCCURED : 0);
+		      (ctx->pred_PC != regs->regs_NPC) ? PEV_MPOCCURED : 0);
       if (op == MD_NOP_OP)
 	{
 	  /* end of the line */
@@ -4183,15 +4200,15 @@ ruu_dispatch(void)
 	}
 
       /* consume instruction from IFETCH -> DISPATCH queue */
-      fetch_head = (fetch_head+1) & (ruu_ifq_size - 1);
-      fetch_num--;
+      ctx->fetch_head = (ctx->fetch_head+1) & (ruu_ifq_size - 1);
+      ctx->fetch_num--;
 
       /* check for DLite debugger entry condition */
       made_check = TRUE;
-      if (dlite_check_break(contexts[0].pred_PC,
+      if (dlite_check_break(ctx->pred_PC,
 			    is_write ? ACCESS_WRITE : ACCESS_READ,
 			    addr, sim_num_insn, sim_cycle))
-	dlite_main(regs->regs_PC, contexts[0].pred_PC, sim_cycle, regs, mem);
+	dlite_main(regs->regs_PC, ctx->pred_PC, sim_cycle, regs, mem);
     }
 
   /* need to enter DLite at least once per cycle */
@@ -4202,6 +4219,9 @@ ruu_dispatch(void)
 			    addr, sim_num_insn, sim_cycle))
 	dlite_main(regs->regs_PC, /* no next PC */0, sim_cycle, regs, mem);
     }
+
+  /* Round-robin dispatch: FIXME */
+  /* ctx_id = (ctx_id + 1) % NUM_CONTEXTS; */
 }
 
 
@@ -4213,14 +4233,21 @@ ruu_dispatch(void)
 static void
 fetch_init(void)
 {
-  /* allocate the IFETCH -> DISPATCH instruction queue */
-  fetch_data =
-    (struct fetch_rec *)calloc(ruu_ifq_size, sizeof(struct fetch_rec));
-  if (!fetch_data)
-    fatal("out of virtual memory");
+  int i;
+  for (i = 0; i < NUM_CONTEXTS; i++)
+    {
+      struct context_t *ctx = &contexts[i];
 
-  fetch_num = 0;
-  fetch_tail = fetch_head = 0;
+      /* allocate the IFETCH -> DISPATCH instruction queue */
+      ctx->fetch_data =
+        (struct fetch_rec *)calloc(ruu_ifq_size, sizeof(struct fetch_rec));
+      if (!ctx->fetch_data)
+        fatal("out of virtual memory");
+
+      ctx->fetch_num = 0;
+      ctx->fetch_tail = ctx->fetch_head = 0;
+    }
+  /* FIXME SMT: stat numbers? */
   IFQ_count = 0;
   IFQ_fcount = 0;
 }
@@ -4230,6 +4257,8 @@ void
 fetch_dump(FILE *stream)			/* output stream */
 {
   int num, head;
+
+  /* SMT-FIXME: only dumps context[0] */
 
   if (!stream)
     stream = stderr;
@@ -4244,19 +4273,19 @@ fetch_dump(FILE *stream)			/* output stream */
   fprintf(stream, "\n");
 
   fprintf(stream, "** fetch queue contents **\n");
-  fprintf(stream, "fetch_num: %d\n", fetch_num);
+  fprintf(stream, "fetch_num: %d\n", contexts[0].fetch_num);
   fprintf(stream, "fetch_head: %d, fetch_tail: %d\n",
-	  fetch_head, fetch_tail);
+	  contexts[0].fetch_head, contexts[0].fetch_tail);
 
-  num = fetch_num;
-  head = fetch_head;
+  num = contexts[0].fetch_num;
+  head = contexts[0].fetch_head;
   while (num)
     {
       fprintf(stream, "idx: %2d: inst: `", head);
-      md_print_insn(fetch_data[head].IR, fetch_data[head].regs_PC, stream);
+      md_print_insn(contexts[0].fetch_data[head].IR, contexts[0].fetch_data[head].regs_PC, stream);
       fprintf(stream, "'\n");
       myfprintf(stream, "         regs_PC: 0x%08p, pred_PC: 0x%08p\n",
-		fetch_data[head].regs_PC, fetch_data[head].pred_PC);
+		contexts[0].fetch_data[head].regs_PC, contexts[0].fetch_data[head].pred_PC);
       head = (head + 1) & (ruu_ifq_size - 1);
       num--;
     }
@@ -4274,30 +4303,34 @@ ruu_fetch(void)
   md_inst_t inst;
   int stack_recover_idx;
   int branch_cnt;
+  static int ctx_id = 0;
   enum md_opcode op;
+  struct context_t *ctx;
   struct mem_t *mem;
 
-  mem = contexts[0].mem;
+  /* points to the current thread context being fetched */
+  ctx = &contexts[ctx_id];
+  mem = ctx->mem;
 
   for (i=0, branch_cnt=0;
        /* fetch up to as many instruction as the DISPATCH stage can decode */
        i < (ruu_decode_width * fetch_speed)
        /* fetch until IFETCH -> DISPATCH queue fills */
-       && fetch_num < ruu_ifq_size
+       && ctx->fetch_num < ruu_ifq_size
        /* and no IFETCH blocking condition encountered */
        && !done;
        i++)
     {
       /* fetch an instruction at the next predicted fetch address */
-      contexts[0].fetch_regs_PC = contexts[0].fetch_pred_PC;
+      ctx->fetch_regs_PC = ctx->fetch_pred_PC;
 
       /* is this a bogus text address? (can happen on mis-spec path) */
-      if (1 || ld_text_base <= contexts[0].fetch_regs_PC
-	  && contexts[0].fetch_regs_PC < (ld_text_base+ld_text_size)
-	  && !(contexts[0].fetch_regs_PC & (sizeof(md_inst_t)-1)))
+      if (1 || ld_text_base <= ctx->fetch_regs_PC
+	  && ctx->fetch_regs_PC < (ld_text_base+ld_text_size)
+	  && !(ctx->fetch_regs_PC & (sizeof(md_inst_t)-1)))
 	{
 	  /* read instruction from memory */
-	  MD_FETCH_INST(inst, mem, contexts[0].fetch_regs_PC);
+	  MD_FETCH_INST(inst, mem, ctx->fetch_regs_PC);
 
 	  /* address is within program text, read instruction from memory */
 	  lat = cache_il1_lat;
@@ -4305,7 +4338,7 @@ ruu_fetch(void)
 	    {
 	      /* access the I-cache */
 	      lat =
-		cache_access(cache_il1, Read, IACOMPRESS(contexts[0].fetch_regs_PC),
+		cache_access(cache_il1, Read, IACOMPRESS(ctx->fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (lat > cache_il1_lat)
@@ -4317,7 +4350,7 @@ ruu_fetch(void)
 	      /* access the I-TLB, NOTE: this code will initiate
 		 speculative TLB misses */
 	      tlb_lat =
-		cache_access(itlb, Read, IACOMPRESS(contexts[0].fetch_regs_PC),
+		cache_access(itlb, Read, IACOMPRESS(ctx->fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (tlb_lat > 1)
@@ -4354,23 +4387,23 @@ ruu_fetch(void)
 	     result for branches (assumes pre-decode bits); NOTE: returned
 	     value may be 1 if bpred can only predict a direction */
 	  if (MD_OP_FLAGS(op) & F_CTRL)
-	    contexts[0].fetch_pred_PC =
+	    ctx->fetch_pred_PC =
 	      bpred_lookup(pred,
-			   /* branch address */contexts[0].fetch_regs_PC,
+			   /* branch address */ctx->fetch_regs_PC,
 			   /* target address *//* FIXME: not computed */0,
 			   /* opcode */op,
 			   /* call? */MD_IS_CALL(op),
 			   /* return? */MD_IS_RETURN(op),
-			   /* updt */&(fetch_data[fetch_tail].dir_update),
+			   /* updt */&(ctx->fetch_data[ctx->fetch_tail].dir_update),
 			   /* RSB index */&stack_recover_idx);
 	  else
-	    contexts[0].fetch_pred_PC = 0;
+	    ctx->fetch_pred_PC = 0;
 
 	  /* valid address returned from branch predictor? */
-	  if (!contexts[0].fetch_pred_PC)
+	  if (!ctx->fetch_pred_PC)
 	    {
 	      /* no predicted taken target, attempt not taken target */
-	      contexts[0].fetch_pred_PC = contexts[0].fetch_regs_PC + sizeof(md_inst_t);
+	      ctx->fetch_pred_PC = ctx->fetch_regs_PC + sizeof(md_inst_t);
 	    }
 	  else
 	    {
@@ -4384,21 +4417,21 @@ ruu_fetch(void)
 	{
 	  /* no predictor, just default to predict not taken, and
 	     continue fetching instructions linearly */
-	  contexts[0].fetch_pred_PC = contexts[0].fetch_regs_PC + sizeof(md_inst_t);
+	  ctx->fetch_pred_PC = ctx->fetch_regs_PC + sizeof(md_inst_t);
 	}
 
       /* commit this instruction to the IFETCH -> DISPATCH queue */
-      fetch_data[fetch_tail].IR = inst;
-      fetch_data[fetch_tail].regs_PC = contexts[0].fetch_regs_PC;
-      fetch_data[fetch_tail].pred_PC = contexts[0].fetch_pred_PC;
-      fetch_data[fetch_tail].stack_recover_idx = stack_recover_idx;
-      fetch_data[fetch_tail].ptrace_seq = ptrace_seq++;
+      ctx->fetch_data[ctx->fetch_tail].IR = inst;
+      ctx->fetch_data[ctx->fetch_tail].regs_PC = ctx->fetch_regs_PC;
+      ctx->fetch_data[ctx->fetch_tail].pred_PC = ctx->fetch_pred_PC;
+      ctx->fetch_data[ctx->fetch_tail].stack_recover_idx = stack_recover_idx;
+      ctx->fetch_data[ctx->fetch_tail].ptrace_seq = ptrace_seq++;
 
       /* for pipe trace */
-      ptrace_newinst(fetch_data[fetch_tail].ptrace_seq,
-		     inst, fetch_data[fetch_tail].regs_PC,
+      ptrace_newinst(ctx->fetch_data[ctx->fetch_tail].ptrace_seq,
+		     inst, ctx->fetch_data[ctx->fetch_tail].regs_PC,
 		     0);
-      ptrace_newstage(fetch_data[fetch_tail].ptrace_seq,
+      ptrace_newstage(ctx->fetch_data[ctx->fetch_tail].ptrace_seq,
 		      PST_IFETCH,
 		      ((last_inst_missed ? PEV_CACHEMISS : 0)
 		       | (last_inst_tmissed ? PEV_TLBMISS : 0)));
@@ -4409,9 +4442,12 @@ ruu_fetch(void)
       if (MD_OP_FLAGS(op) & F_MEM) ptrace_seq++;
       
       /* adjust instruction fetch queue */
-      fetch_tail = (fetch_tail + 1) & (ruu_ifq_size - 1);
-      fetch_num++;
+      ctx->fetch_tail = (ctx->fetch_tail + 1) & (ruu_ifq_size - 1);
+      ctx->fetch_num++;
     }
+
+  /* update the index of which context to be fetched next FIXME */
+  ctx_id = (ctx_id + 1) % NUM_CONTEXTS;
 }
 
 /* default machine state accessor, used by DLite */
@@ -4669,8 +4705,9 @@ sim_main(void)
 	ruu_fetch_issue_delay--;
 
       /* update buffer occupancy stats */
-      IFQ_count += fetch_num;
-      IFQ_fcount += ((fetch_num == ruu_ifq_size) ? 1 : 0);
+      /* SMT-FIXME only contexts[0] */
+      IFQ_count += contexts[0].fetch_num;
+      IFQ_fcount += ((contexts[0].fetch_num == ruu_ifq_size) ? 1 : 0);
       RUU_count += RUU_num;
       RUU_fcount += ((RUU_num == RUU_size) ? 1 : 0);
       LSQ_count += LSQ_num;
