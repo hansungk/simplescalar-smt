@@ -80,7 +80,19 @@
  * pipeline operations.
  */
 
-#define NUM_CONTEXTS 2
+#define NUM_CONTEXTS 4
+
+/*
+ * the create vector maps a logical register to a creator in the RUU (and
+ * specific output operand) or the architected register file (if RS_link
+ * is NULL)
+ */
+
+/* an entry in the create vector */
+struct CV_link {
+  struct RUU_station *rs;               /* creator's reservation station */
+  int odep_num;                         /* specific output operand */
+};
 
 /* separated states for each thread context */
 static struct context_t {
@@ -107,6 +119,31 @@ static struct context_t {
   struct fetch_rec *fetch_data;	/* IFETCH -> DISPATCH inst queue */
   int fetch_num;			/* num entries in IF -> DIS queue */
   int fetch_tail, fetch_head;	/* head and tail pointers of queue */
+
+  /* (per-thread) speculation mode, non-zero when mis-speculating, i.e., executing
+     instructions down the wrong path, thus state recovery will eventually have
+     to occur that resets processor register and memory state back to the last
+     precise state */
+  int spec_mode;
+
+  /* register update unit, combination of reservation stations and reorder
+     buffer device, organized as a circular queue */
+  struct RUU_station *RUU;		/* register update unit */
+  int RUU_head, RUU_tail;		/* RUU head and tail pointers */
+  int RUU_num;			/* num entries currently in RUU */
+
+  struct RUU_station *LSQ;         /* load/store queue */
+  int LSQ_head, LSQ_tail;          /* LSQ head and tail pointers */
+  int LSQ_num;                     /* num entries currently in LSQ */
+
+  /* per-thread rename table.  These are needed because each thread
+     has separate architectural registers with overlapping names.*/
+  BITMAP_TYPE(MD_TOTAL_REGS, use_spec_cv);
+  struct CV_link create_vector[MD_TOTAL_REGS];
+  struct CV_link spec_create_vector[MD_TOTAL_REGS];
+
+  tick_t create_vector_rt[MD_TOTAL_REGS];
+  tick_t spec_create_vector_rt[MD_TOTAL_REGS];
 } contexts[NUM_CONTEXTS];
 
 /* simulated registers */
@@ -395,7 +432,7 @@ static unsigned int ptrace_seq = 0;
    instructions down the wrong path, thus state recovery will eventually have
    to occur that resets processor register and memory state back to the last
    precise state */
-static int spec_mode = FALSE;
+/* static int spec_mode = FALSE; */
 
 /* cycles until fetch issue resumes */
 static unsigned ruu_fetch_issue_delay = 0;
@@ -1424,7 +1461,10 @@ sim_init(void)
   /* allocate and initialize register file */
   // regs_init(&regs);
   for (i = 0; i < NUM_CONTEXTS; i++)
-    regs_init(&contexts[i].regs);
+    {
+      regs_init(&contexts[i].regs);
+      contexts[i].regs.context_id = i;
+    }
 
   /* allocate and initialize memory space */
   // mem = mem_create("mem");
@@ -1433,6 +1473,7 @@ sim_init(void)
     {
       contexts[i].mem = mem_create("mem");
       mem_init(contexts[i].mem);
+      contexts[i].mem->context_id = i;
     }
 }
 
@@ -1473,7 +1514,15 @@ sim_load_prog(char *fname,		/* program to load */
   /* load program text and data, set up environment, memory, and regs */
   // ld_load_prog(fname, argc, argv, envp, &regs, mem, TRUE);
   for (i = 0; i < NUM_CONTEXTS; i++)
-    ld_load_prog(fname, argc, argv, envp, &contexts[i].regs, contexts[i].mem, TRUE);
+    {
+      struct context_t *ctx = &contexts[i];
+      ld_load_prog(fname, argc, argv, envp, &ctx->regs, ctx->mem, TRUE);
+
+      /* SMT-FIXME needed? */
+      /* ctx->regs.regs_PC = ctx->mem->ld_prog_entry; */
+      /* ctx->regs.regs_NPC = ctx->mem->ld_prog_entry + 4; */
+      ctx->regs.context_id = i;
+    }
 
   /* initialize here, so symbols can be loaded */
   if (ptrace_nelt == 2)
@@ -1552,6 +1601,8 @@ typedef unsigned int INST_SEQ_TYPE;
    into the RUU and the load/store inserted into the LSQ, allowing the add
    to wake up the load/store when effective address computation has finished */
 struct RUU_station {
+  /* context info */
+  int context_id;			/* ID of the context this entry is issued from */
   /* inst info */
   md_inst_t IR;			/* instruction bits */
   enum md_opcode op;			/* decoded instruction opcode */
@@ -1594,20 +1645,36 @@ struct RUU_station {
 
 /* register update unit, combination of reservation stations and reorder
    buffer device, organized as a circular queue */
-static struct RUU_station *RUU;		/* register update unit */
-static int RUU_head, RUU_tail;		/* RUU head and tail pointers */
-static int RUU_num;			/* num entries currently in RUU */
+/* static struct RUU_station *RUU;		/\* register update unit *\/ */
+/* static int RUU_head, RUU_tail;		/\* RUU head and tail pointers *\/ */
+/* static int RUU_num;			/\* num entries currently in RUU *\/ */
 
 /* allocate and initialize register update unit (RUU) */
 static void
 ruu_init(void)
 {
+#if 0
   RUU = calloc(RUU_size, sizeof(struct RUU_station));
   if (!RUU)
     fatal("out of virtual memory");
 
   RUU_num = 0;
   RUU_head = RUU_tail = 0;
+  RUU_count = 0;
+  RUU_fcount = 0;
+#endif
+  int i;
+  for (i = 0; i < NUM_CONTEXTS; i++)
+    {
+      struct context_t *ctx = &contexts[i];
+      ctx->RUU = calloc(RUU_size, sizeof(struct RUU_station));
+      if (!ctx->RUU)
+        fatal("out of virtual memory");
+
+      ctx->RUU_num = 0;
+      ctx->RUU_head = ctx->RUU_tail = 0;
+    }
+  /* FIXME */
   RUU_count = 0;
   RUU_fcount = 0;
 }
@@ -1655,19 +1722,21 @@ ruu_dump(FILE *stream)				/* output stream */
   int num, head;
   struct RUU_station *rs;
 
+  /* SMT-FIXME dumps only contexts[0] */
+
   if (!stream)
     stream = stderr;
 
   fprintf(stream, "** RUU state **\n");
-  fprintf(stream, "RUU_head: %d, RUU_tail: %d\n", RUU_head, RUU_tail);
-  fprintf(stream, "RUU_num: %d\n", RUU_num);
+  fprintf(stream, "RUU_head: %d, RUU_tail: %d\n", contexts[0].RUU_head, contexts[0].RUU_tail);
+  fprintf(stream, "RUU_num: %d\n", contexts[0].RUU_num);
 
-  num = RUU_num;
-  head = RUU_head;
+  num = contexts[0].RUU_num;
+  head = contexts[0].RUU_head;
   while (num)
     {
-      rs = &RUU[head];
-      ruu_dumpent(rs, rs - RUU, stream, /* header */TRUE);
+      rs = &contexts[0].RUU[head];
+      ruu_dumpent(rs, rs - contexts[0].RUU, stream, /* header */TRUE);
       head = (head + 1) % RUU_size;
       num--;
     }
@@ -1701,9 +1770,9 @@ ruu_dump(FILE *stream)				/* output stream */
  *   cycle the store executes (using a bypass network), thus stores complete
  *   in effective zero time after their effective address is known
  */
-static struct RUU_station *LSQ;         /* load/store queue */
-static int LSQ_head, LSQ_tail;          /* LSQ head and tail pointers */
-static int LSQ_num;                     /* num entries currently in LSQ */
+/* static struct RUU_station *LSQ;         /\* load/store queue *\/ */
+/* static int LSQ_head, LSQ_tail;          /\* LSQ head and tail pointers *\/ */
+/* static int LSQ_num;                     /\* num entries currently in LSQ *\/ */
 
 /*
  * input dependencies for stores in the LSQ:
@@ -1720,12 +1789,28 @@ static int LSQ_num;                     /* num entries currently in LSQ */
 static void
 lsq_init(void)
 {
+#if 0
   LSQ = calloc(LSQ_size, sizeof(struct RUU_station));
   if (!LSQ)
     fatal("out of virtual memory");
 
   LSQ_num = 0;
   LSQ_head = LSQ_tail = 0;
+  LSQ_count = 0;
+  LSQ_fcount = 0;
+#endif
+  int i;
+  for (i = 0; i < NUM_CONTEXTS; i++)
+    {
+      struct context_t *ctx = &contexts[i];
+      ctx->LSQ = calloc(LSQ_size, sizeof(struct RUU_station));
+      if (!ctx->LSQ)
+        fatal("out of virtual memory");
+
+      ctx->LSQ_num = 0;
+      ctx->LSQ_head = ctx->LSQ_tail = 0;
+    }
+  /* SMT-FIXME */
   LSQ_count = 0;
   LSQ_fcount = 0;
 }
@@ -1737,19 +1822,21 @@ lsq_dump(FILE *stream)				/* output stream */
   int num, head;
   struct RUU_station *rs;
 
+  /* SMT-FIXME only contexts[0] */
+
   if (!stream)
     stream = stderr;
 
   fprintf(stream, "** LSQ state **\n");
-  fprintf(stream, "LSQ_head: %d, LSQ_tail: %d\n", LSQ_head, LSQ_tail);
-  fprintf(stream, "LSQ_num: %d\n", LSQ_num);
+  fprintf(stream, "LSQ_head: %d, LSQ_tail: %d\n", contexts[0].LSQ_head, contexts[0].LSQ_tail);
+  fprintf(stream, "LSQ_num: %d\n", contexts[0].LSQ_num);
 
-  num = LSQ_num;
-  head = LSQ_head;
+  num = contexts[0].LSQ_num;
+  head = contexts[0].LSQ_head;
   while (num)
     {
-      rs = &LSQ[head];
-      ruu_dumpent(rs, rs - LSQ, stream, /* header */TRUE);
+      rs = &contexts[0].LSQ[head];
+      ruu_dumpent(rs, rs - contexts[0].LSQ, stream, /* header */TRUE);
       head = (head + 1) % LSQ_size;
       num--;
     }
@@ -1904,8 +1991,8 @@ eventq_dump(FILE *stream)			/* output stream */
 	  struct RUU_station *rs = RSLINK_RS(ev);
 
 	  fprintf(stream, "idx: %2d: @ %.0f\n",
-		  (int)(rs - (rs->in_LSQ ? LSQ : RUU)), (double)ev->x.when);
-	  ruu_dumpent(rs, rs - (rs->in_LSQ ? LSQ : RUU),
+		  (int)(rs - (rs->in_LSQ ? contexts[rs->context_id].LSQ : contexts[rs->context_id].RUU)), (double)ev->x.when);
+	  ruu_dumpent(rs, rs - (rs->in_LSQ ? contexts[rs->context_id].LSQ : contexts[rs->context_id].RUU),
 		      stream, /* !header */FALSE);
 	}
     }
@@ -2029,7 +2116,7 @@ readyq_dump(FILE *stream)			/* output stream */
 	{
 	  struct RUU_station *rs = RSLINK_RS(link);
 
-	  ruu_dumpent(rs, rs - (rs->in_LSQ ? LSQ : RUU),
+	  ruu_dumpent(rs, rs - (rs->in_LSQ ? contexts[rs->context_id].LSQ : contexts[rs->context_id].RUU),
 		      stream, /* header */TRUE);
 	}
     }
@@ -2091,18 +2178,6 @@ readyq_enqueue(struct RUU_station *rs)		/* RS to enqueue */
 }
 
 
-/*
- * the create vector maps a logical register to a creator in the RUU (and
- * specific output operand) or the architected register file (if RS_link
- * is NULL)
- */
-
-/* an entry in the create vector */
-struct CV_link {
-  struct RUU_station *rs;               /* creator's reservation station */
-  int odep_num;                         /* specific output operand */
-};
-
 /* a NULL create vector entry */
 static struct CV_link CVLINK_NULL = { NULL, 0 };
 
@@ -2115,49 +2190,54 @@ static struct CV_link CVLINK_NULL = { NULL, 0 };
 /* the create vector, NOTE: speculative copy on write storage provided
    for fast recovery during wrong path execute (see tracer_recover() for
    details on this process */
-static BITMAP_TYPE(MD_TOTAL_REGS, use_spec_cv);
-static struct CV_link create_vector[MD_TOTAL_REGS];
-static struct CV_link spec_create_vector[MD_TOTAL_REGS];
+/* static BITMAP_TYPE(MD_TOTAL_REGS, use_spec_cv); */
+/* static struct CV_link create_vector[MD_TOTAL_REGS]; */
+/* static struct CV_link spec_create_vector[MD_TOTAL_REGS]; */
 
 /* these arrays shadow the create vector an indicate when a register was
    last created */
-static tick_t create_vector_rt[MD_TOTAL_REGS];
-static tick_t spec_create_vector_rt[MD_TOTAL_REGS];
+/* static tick_t create_vector_rt[MD_TOTAL_REGS]; */
+/* static tick_t spec_create_vector_rt[MD_TOTAL_REGS]; */
 
 /* read a create vector entry */
-#define CREATE_VECTOR(N)        (BITMAP_SET_P(use_spec_cv, CV_BMAP_SZ, (N))\
-				 ? spec_create_vector[N]                \
-				 : create_vector[N])
+#define CREATE_VECTOR(N)        (BITMAP_SET_P(ctx->use_spec_cv, CV_BMAP_SZ, (N))\
+				 ? ctx->spec_create_vector[N]                \
+				 : ctx->create_vector[N])
 
 /* read a create vector timestamp entry */
-#define CREATE_VECTOR_RT(N)     (BITMAP_SET_P(use_spec_cv, CV_BMAP_SZ, (N))\
-				 ? spec_create_vector_rt[N]             \
-				 : create_vector_rt[N])
+#define CREATE_VECTOR_RT(N)     (BITMAP_SET_P(ctx->use_spec_cv, CV_BMAP_SZ, (N))\
+				 ? ctx->spec_create_vector_rt[N]             \
+				 : ctx->create_vector_rt[N])
 
 /* set a create vector entry */
-#define SET_CREATE_VECTOR(N, L) (spec_mode                              \
-				 ? (BITMAP_SET(use_spec_cv, CV_BMAP_SZ, (N)),\
-				    spec_create_vector[N] = (L))        \
-				 : (create_vector[N] = (L)))
+#define SET_CREATE_VECTOR(N, L) (ctx->spec_mode                              \
+				 ? (BITMAP_SET(ctx->use_spec_cv, CV_BMAP_SZ, (N)),\
+				    ctx->spec_create_vector[N] = (L))        \
+				 : (ctx->create_vector[N] = (L)))
 
 /* initialize the create vector */
 static void
 cv_init(void)
 {
-  int i;
+  int i, t;
 
-  /* initially all registers are valid in the architected register file,
-     i.e., the create vector entry is CVLINK_NULL */
-  for (i=0; i < MD_TOTAL_REGS; i++)
+  for (t = 0; t < NUM_CONTEXTS; t++)
     {
-      create_vector[i] = CVLINK_NULL;
-      create_vector_rt[i] = 0;
-      spec_create_vector[i] = CVLINK_NULL;
-      spec_create_vector_rt[i] = 0;
-    }
+      struct context_t *ctx = &contexts[t];
 
-  /* all create vector entries are non-speculative */
-  BITMAP_CLEAR_MAP(use_spec_cv, CV_BMAP_SZ);
+      /* initially all registers are valid in the architected register file,
+         i.e., the create vector entry is CVLINK_NULL */
+      for (i=0; i < MD_TOTAL_REGS; i++)
+        {
+          ctx->create_vector[i] = CVLINK_NULL;
+          ctx->create_vector_rt[i] = 0;
+          ctx->spec_create_vector[i] = CVLINK_NULL;
+          ctx->spec_create_vector_rt[i] = 0;
+        }
+
+      /* all create vector entries are non-speculative */
+      BITMAP_CLEAR_MAP(ctx->use_spec_cv, CV_BMAP_SZ);
+    }
 }
 
 /* dump the contents of the create vector */
@@ -2166,6 +2246,9 @@ cv_dump(FILE *stream)				/* output stream */
 {
   int i;
   struct CV_link ent;
+  struct context_t *ctx = &contexts[0];
+
+  /* SMT-FIXME: only dump 0 */
 
   if (!stream)
     stream = stderr;
@@ -2180,7 +2263,7 @@ cv_dump(FILE *stream)				/* output stream */
       else
 	fprintf(stream, "[cv%02d]: from %s, idx: %d\n",
 		i, (ent.rs->in_LSQ ? "LSQ" : "RUU"),
-		(int)(ent.rs - (ent.rs->in_LSQ ? LSQ : RUU)));
+		(int)(ent.rs - (ent.rs->in_LSQ ? contexts[ent.rs->context_id].LSQ : contexts[ent.rs->context_id].RUU)));
     }
 }
 
@@ -2193,15 +2276,16 @@ cv_dump(FILE *stream)				/* output stream */
    RUU and LSQ to the architected reg file, stores in the LSQ will commit
    their store data to the data cache at this point as well */
 static void
-ruu_commit(void)
+ruu_commit(int ctx_id)
 {
   int i, lat, events, committed = 0;
   static counter_t sim_ret_insn = 0;
+  struct context_t *ctx = &contexts[ctx_id];
 
   /* all values must be retired to the architected reg file in program order */
-  while (RUU_num > 0 && committed < ruu_commit_width)
+  while (ctx->RUU_num > 0 && committed < ruu_commit_width)
     {
-      struct RUU_station *rs = &(RUU[RUU_head]);
+      struct RUU_station *rs = &(ctx->RUU[ctx->RUU_head]);
 
       if (!rs->completed)
 	{
@@ -2213,20 +2297,20 @@ ruu_commit(void)
       events = 0;
 
       /* load/stores must retire load/store queue entry as well */
-      if (RUU[RUU_head].ea_comp)
+      if (ctx->RUU[ctx->RUU_head].ea_comp)
 	{
 	  /* load/store, retire head of LSQ as well */
-	  if (LSQ_num <= 0 || !LSQ[LSQ_head].in_LSQ)
+	  if (ctx->LSQ_num <= 0 || !ctx->LSQ[ctx->LSQ_head].in_LSQ)
 	    panic("RUU out of sync with LSQ");
 
 	  /* load/store operation must be complete */
-	  if (!LSQ[LSQ_head].completed)
+	  if (!ctx->LSQ[ctx->LSQ_head].completed)
 	    {
 	      /* load/store operation is not yet complete */
 	      break;
 	    }
 
-	  if ((MD_OP_FLAGS(LSQ[LSQ_head].op) & (F_MEM|F_STORE))
+	  if ((MD_OP_FLAGS(ctx->LSQ[ctx->LSQ_head].op) & (F_MEM|F_STORE))
 	      == (F_MEM|F_STORE))
 	    {
 	      struct res_template *fu;
@@ -2234,7 +2318,7 @@ ruu_commit(void)
 
 	      /* stores must retire their store value to the cache at commit,
 		 try to get a store port (functional unit allocation) */
-	      fu = res_get(fu_pool, MD_OP_FUCLASS(LSQ[LSQ_head].op));
+	      fu = res_get(fu_pool, MD_OP_FUCLASS(ctx->LSQ[ctx->LSQ_head].op));
 	      if (fu)
 		{
 		  /* reserve the functional unit */
@@ -2249,7 +2333,7 @@ ruu_commit(void)
 		    {
 		      /* commit store value to D-cache */
 		      lat =
-			cache_access(cache_dl1, Write, (LSQ[LSQ_head].addr&~3),
+			cache_access(cache_dl1, Write, (ctx->LSQ[ctx->LSQ_head].addr&~3),
 				     NULL, 4, sim_cycle, NULL, NULL);
 		      if (lat > cache_dl1_lat)
 			events |= PEV_CACHEMISS;
@@ -2260,7 +2344,7 @@ ruu_commit(void)
 		    {
 		      /* access the D-TLB */
 		      lat =
-			cache_access(dtlb, Read, (LSQ[LSQ_head].addr & ~3),
+			cache_access(dtlb, Read, (ctx->LSQ[ctx->LSQ_head].addr & ~3),
 				     NULL, 4, sim_cycle, NULL, NULL);
 		      if (lat > 1)
 			events |= PEV_TLBMISS;
@@ -2274,16 +2358,16 @@ ruu_commit(void)
 	    }
 
 	  /* invalidate load/store operation instance */
-	  LSQ[LSQ_head].tag++;
-          sim_slip += (sim_cycle - LSQ[LSQ_head].slip);
+	  ctx->LSQ[ctx->LSQ_head].tag++;
+          sim_slip += (sim_cycle - ctx->LSQ[ctx->LSQ_head].slip);
    
 	  /* indicate to pipeline trace that this instruction retired */
-	  ptrace_newstage(LSQ[LSQ_head].ptrace_seq, PST_COMMIT, events);
-	  ptrace_endinst(LSQ[LSQ_head].ptrace_seq);
+	  ptrace_newstage(ctx->LSQ[ctx->LSQ_head].ptrace_seq, PST_COMMIT, events);
+	  ptrace_endinst(ctx->LSQ[ctx->LSQ_head].ptrace_seq);
 
 	  /* commit head of LSQ as well */
-	  LSQ_head = (LSQ_head + 1) % LSQ_size;
-	  LSQ_num--;
+	  ctx->LSQ_head = (ctx->LSQ_head + 1) % LSQ_size;
+	  ctx->LSQ_num--;
 	}
 
       if (pred
@@ -2303,27 +2387,27 @@ ruu_commit(void)
 	}
 
       /* invalidate RUU operation instance */
-      RUU[RUU_head].tag++;
-      sim_slip += (sim_cycle - RUU[RUU_head].slip);
+      ctx->RUU[ctx->RUU_head].tag++;
+      sim_slip += (sim_cycle - ctx->RUU[ctx->RUU_head].slip);
       /* print retirement trace if in verbose mode */
       if (verbose)
 	{
 	  sim_ret_insn++;
-	  myfprintf(stderr, "%10n @ 0x%08p: ", sim_ret_insn, RUU[RUU_head].PC);
- 	  md_print_insn(RUU[RUU_head].IR, RUU[RUU_head].PC, stderr);
-	  if (MD_OP_FLAGS(RUU[RUU_head].op) & F_MEM)
-	    myfprintf(stderr, "  mem: 0x%08p", RUU[RUU_head].addr);
+	  myfprintf(stderr, "%10n @ 0x%08p: ", sim_ret_insn, ctx->RUU[ctx->RUU_head].PC);
+ 	  md_print_insn(ctx->RUU[ctx->RUU_head].IR, ctx->RUU[ctx->RUU_head].PC, stderr);
+	  if (MD_OP_FLAGS(ctx->RUU[ctx->RUU_head].op) & F_MEM)
+	    myfprintf(stderr, "  mem: 0x%08p", ctx->RUU[ctx->RUU_head].addr);
 	  fprintf(stderr, "\n");
 	  /* fflush(stderr); */
 	}
 
       /* indicate to pipeline trace that this instruction retired */
-      ptrace_newstage(RUU[RUU_head].ptrace_seq, PST_COMMIT, events);
-      ptrace_endinst(RUU[RUU_head].ptrace_seq);
+      ptrace_newstage(ctx->RUU[ctx->RUU_head].ptrace_seq, PST_COMMIT, events);
+      ptrace_endinst(ctx->RUU[ctx->RUU_head].ptrace_seq);
 
       /* commit head entry of RUU */
-      RUU_head = (RUU_head + 1) % RUU_size;
-      RUU_num--;
+      ctx->RUU_head = (ctx->RUU_head + 1) % RUU_size;
+      ctx->RUU_num--;
 
       /* one more instruction committed to architected state */
       committed++;
@@ -2344,10 +2428,11 @@ ruu_commit(void)
 /* recover processor microarchitecture state back to point of the
    mis-predicted branch at RUU[BRANCH_INDEX] */
 static void
-ruu_recover(int branch_index)			/* index of mis-pred branch */
+ruu_recover(int ctx_id, int branch_index)			/* index of mis-pred branch */
 {
-  int i, RUU_index = RUU_tail, LSQ_index = LSQ_tail;
-  int RUU_prev_tail = RUU_tail, LSQ_prev_tail = LSQ_tail;
+  struct context_t *ctx = &contexts[ctx_id];
+  int i, RUU_index = ctx->RUU_tail, LSQ_index = ctx->LSQ_tail;
+  int RUU_prev_tail = ctx->RUU_tail, LSQ_prev_tail = ctx->LSQ_tail;
 
   /* recover from the tail of the RUU towards the head until the branch index
      is reached, this direction ensures that the LSQ can be synchronized with
@@ -2361,68 +2446,68 @@ ruu_recover(int branch_index)			/* index of mis-pred branch */
   while (RUU_index != branch_index)
     {
       /* the RUU should not drain since the mispredicted branch will remain */
-      if (!RUU_num)
+      if (!ctx->RUU_num)
 	panic("empty RUU");
 
       /* should meet up with the tail first */
-      if (RUU_index == RUU_head)
+      if (RUU_index == ctx->RUU_head)
 	panic("RUU head and tail broken");
 
       /* is this operation an effective addr calc for a load or store? */
-      if (RUU[RUU_index].ea_comp)
+      if (ctx->RUU[RUU_index].ea_comp)
 	{
 	  /* should be at least one load or store in the LSQ */
-	  if (!LSQ_num)
+	  if (!ctx->LSQ_num)
 	    panic("RUU and LSQ out of sync");
 
 	  /* recover any resources consumed by the load or store operation */
 	  for (i=0; i<MAX_ODEPS; i++)
 	    {
-	      RSLINK_FREE_LIST(LSQ[LSQ_index].odep_list[i]);
+	      RSLINK_FREE_LIST(ctx->LSQ[LSQ_index].odep_list[i]);
 	      /* blow away the consuming op list */
-	      LSQ[LSQ_index].odep_list[i] = NULL;
+	      ctx->LSQ[LSQ_index].odep_list[i] = NULL;
 	    }
       
 	  /* squash this LSQ entry */
-	  LSQ[LSQ_index].tag++;
+	  ctx->LSQ[LSQ_index].tag++;
 
 	  /* indicate in pipetrace that this instruction was squashed */
-	  ptrace_endinst(LSQ[LSQ_index].ptrace_seq);
+	  ptrace_endinst(ctx->LSQ[LSQ_index].ptrace_seq);
 
 	  /* go to next earlier LSQ slot */
 	  LSQ_prev_tail = LSQ_index;
 	  LSQ_index = (LSQ_index + (LSQ_size-1)) % LSQ_size;
-	  LSQ_num--;
+	  ctx->LSQ_num--;
 	}
 
       /* recover any resources used by this RUU operation */
       for (i=0; i<MAX_ODEPS; i++)
 	{
-	  RSLINK_FREE_LIST(RUU[RUU_index].odep_list[i]);
+	  RSLINK_FREE_LIST(ctx->RUU[RUU_index].odep_list[i]);
 	  /* blow away the consuming op list */
-	  RUU[RUU_index].odep_list[i] = NULL;
+	  ctx->RUU[RUU_index].odep_list[i] = NULL;
 	}
       
       /* squash this RUU entry */
-      RUU[RUU_index].tag++;
+      ctx->RUU[RUU_index].tag++;
 
       /* indicate in pipetrace that this instruction was squashed */
-      ptrace_endinst(RUU[RUU_index].ptrace_seq);
+      ptrace_endinst(ctx->RUU[RUU_index].ptrace_seq);
 
       /* go to next earlier slot in the RUU */
       RUU_prev_tail = RUU_index;
       RUU_index = (RUU_index + (RUU_size-1)) % RUU_size;
-      RUU_num--;
+      ctx->RUU_num--;
     }
 
   /* reset head/tail pointers to point to the mis-predicted branch */
-  RUU_tail = RUU_prev_tail;
-  LSQ_tail = LSQ_prev_tail;
+  ctx->RUU_tail = RUU_prev_tail;
+  ctx->LSQ_tail = LSQ_prev_tail;
 
   /* revert create vector back to last precise create vector state, NOTE:
      this is accomplished by resetting all the copied-on-write bits in the
      USE_SPEC_CV bit vector */
-  BITMAP_CLEAR_MAP(use_spec_cv, CV_BMAP_SZ);
+  BITMAP_CLEAR_MAP(ctx->use_spec_cv, CV_BMAP_SZ);
 
   /* FIXME: could reset functional units at squash time */
 }
@@ -2449,6 +2534,9 @@ ruu_writeback(void)
   /* service all completed events */
   while ((rs = eventq_next_event()))
     {
+      /* context that this rs is in */
+      struct context_t *ctx = &contexts[rs->context_id];
+
       /* RS has completed execution and (possibly) produced a result */
       if (!OPERANDS_READY(rs) || rs->queued || !rs->issued || rs->completed)
 	panic("inst completed and !ready, !issued, or completed");
@@ -2463,8 +2551,8 @@ ruu_writeback(void)
 	    panic("mis-predicted load or store?!?!?");
 
 	  /* recover processor state and reinit fetch to correct path */
-	  ruu_recover(rs - RUU);
-	  tracer_recover(0); /* FIXME */
+	  ruu_recover(rs->context_id, rs - ctx->RUU);
+	  tracer_recover(rs->context_id);
 	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
           recovery_count++;
 
@@ -2511,14 +2599,14 @@ ruu_writeback(void)
 		{
 		  /* update the speculative create vector, future operations
 		     get value from later creator or architected reg file */
-		  link = spec_create_vector[rs->onames[i]];
+		  link = ctx->spec_create_vector[rs->onames[i]];
 		  if (/* !NULL */link.rs
 		      && /* refs RS */(link.rs == rs && link.odep_num == i))
 		    {
 		      /* the result can now be read from a physical register,
 			 indicate this as so */
-		      spec_create_vector[rs->onames[i]] = CVLINK_NULL;
-		      spec_create_vector_rt[rs->onames[i]] = sim_cycle;
+		      ctx->spec_create_vector[rs->onames[i]] = CVLINK_NULL;
+		      ctx->spec_create_vector_rt[rs->onames[i]] = sim_cycle;
 		    }
 		  /* else, creator invalidated or there is another creator */
 		}
@@ -2527,14 +2615,14 @@ ruu_writeback(void)
 		  /* update the non-speculative create vector, future
 		     operations get value from later creator or architected
 		     reg file */
-		  link = create_vector[rs->onames[i]];
+		  link = ctx->create_vector[rs->onames[i]];
 		  if (/* !NULL */link.rs
 		      && /* refs RS */(link.rs == rs && link.odep_num == i))
 		    {
 		      /* the result can now be read from a physical register,
 			 indicate this as so */
-		      create_vector[rs->onames[i]] = CVLINK_NULL;
-		      create_vector_rt[rs->onames[i]] = sim_cycle;
+		      ctx->create_vector[rs->onames[i]] = CVLINK_NULL;
+		      ctx->create_vector_rt[rs->onames[i]] = sim_cycle;
 		    }
 		  /* else, creator invalidated or there is another creator */
 		}
@@ -2592,31 +2680,32 @@ ruu_writeback(void)
    unknown address) */
 #define MAX_STD_UNKNOWNS		64
 static void
-lsq_refresh(void)
+lsq_refresh(int ctx_id)
 {
   int i, j, index, n_std_unknowns;
   md_addr_t std_unknowns[MAX_STD_UNKNOWNS];
+  struct context_t *ctx = &contexts[ctx_id];
 
   /* scan entire queue for ready loads: scan from oldest instruction
      (head) until we reach the tail or an unresolved store, after which no
      other instruction will become ready */
-  for (i=0, index=LSQ_head, n_std_unknowns=0;
-       i < LSQ_num;
+  for (i=0, index=ctx->LSQ_head, n_std_unknowns=0;
+       i < ctx->LSQ_num;
        i++, index=(index + 1) % LSQ_size)
     {
       /* terminate search for ready loads after first unresolved store,
 	 as no later load could be resolved in its presence */
       if (/* store? */
-	  (MD_OP_FLAGS(LSQ[index].op) & (F_MEM|F_STORE)) == (F_MEM|F_STORE))
+	  (MD_OP_FLAGS(ctx->LSQ[index].op) & (F_MEM|F_STORE)) == (F_MEM|F_STORE))
 	{
-	  if (!STORE_ADDR_READY(&LSQ[index]) && !perfect_disambig)
+	  if (!STORE_ADDR_READY(&ctx->LSQ[index]) && !perfect_disambig)
 	    {
 	      /* FIXME: a later STD + STD known could hide the STA unknown */
 	      /* STA unknown, blocks all later loads, stop search */
 	      break;
 	    }
-	  else if (!OPERANDS_READY(&LSQ[index]) ||
-	    (!STORE_ADDR_READY(&LSQ[index]) && perfect_disambig))
+	  else if (!OPERANDS_READY(&ctx->LSQ[index]) ||
+	    (!STORE_ADDR_READY(&ctx->LSQ[index]) && perfect_disambig))
 	    {
 	      /* STA known, but STD unknown: may block a later store, record
 		 this address for later referral, we use an array here because
@@ -2625,38 +2714,38 @@ lsq_refresh(void)
 		 not ready, treat this in the same manner as a STD unknown. */
 	      if (n_std_unknowns == MAX_STD_UNKNOWNS)
 		fatal("STD unknown array overflow, increase MAX_STD_UNKNOWNS");
-	      std_unknowns[n_std_unknowns++] = LSQ[index].addr;
+	      std_unknowns[n_std_unknowns++] = ctx->LSQ[index].addr;
 	    }
 	  else /* STORE_ADDR_READY() && OPERANDS_READY() */
 	    {
 	      /* a later STD known hides an earlier STD unknown */
 	      for (j=0; j<n_std_unknowns; j++)
 		{
-		  if (std_unknowns[j] == /* STA/STD known */LSQ[index].addr)
+		  if (std_unknowns[j] == /* STA/STD known */ctx->LSQ[index].addr)
 		    std_unknowns[j] = /* bogus addr */0;
 		}
 	    }
 	}
 
       if (/* load? */
-	  ((MD_OP_FLAGS(LSQ[index].op) & (F_MEM|F_LOAD)) == (F_MEM|F_LOAD))
-	  && /* queued? */!LSQ[index].queued
-	  && /* waiting? */!LSQ[index].issued
-	  && /* completed? */!LSQ[index].completed
-	  && /* regs ready? */OPERANDS_READY(&LSQ[index]))
+	  ((MD_OP_FLAGS(ctx->LSQ[index].op) & (F_MEM|F_LOAD)) == (F_MEM|F_LOAD))
+	  && /* queued? */!ctx->LSQ[index].queued
+	  && /* waiting? */!ctx->LSQ[index].issued
+	  && /* completed? */!ctx->LSQ[index].completed
+	  && /* regs ready? */OPERANDS_READY(&ctx->LSQ[index]))
 	{
 	  /* no STA unknown conflict (because we got to this check), check for
 	     a STD unknown conflict */
 	  for (j=0; j<n_std_unknowns; j++)
 	    {
 	      /* found a relevant STD unknown? */
-	      if (std_unknowns[j] == LSQ[index].addr)
+	      if (std_unknowns[j] == ctx->LSQ[index].addr)
 		break;
 	    }
 	  if (j == n_std_unknowns)
 	    {
 	      /* no STA or STD unknown conflicts, put load on ready queue */
-	      readyq_enqueue(&LSQ[index]);
+	      readyq_enqueue(&ctx->LSQ[index]);
 	    }
 	}
     }
@@ -2704,6 +2793,8 @@ ruu_issue(void)
       if (RSLINK_VALID(node))
 	{
 	  struct RUU_station *rs = RSLINK_RS(node);
+          /* context this rs is in */
+          struct context_t *ctx = &contexts[rs->context_id];
 
 	  /* issue operation, both reg and mem deps have been satisfied */
 	  if (!OPERANDS_READY(rs) || !rs->queued
@@ -2762,8 +2853,8 @@ ruu_issue(void)
 			     first scan LSQ to see if a store forward is
 			     possible, if not, access the data cache */
 			  load_lat = 0;
-			  i = (rs - LSQ);
-			  if (i != LSQ_head)
+			  i = (rs - ctx->LSQ);
+			  if (i != ctx->LSQ_head)
 			    {
 			      for (;;)
 				{
@@ -2771,8 +2862,8 @@ ruu_issue(void)
 				  i = (i + (LSQ_size-1)) % LSQ_size;
 
 				  /* FIXME: not dealing with partials! */
-				  if ((MD_OP_FLAGS(LSQ[i].op) & F_STORE)
-				      && (LSQ[i].addr == rs->addr))
+				  if ((MD_OP_FLAGS(ctx->LSQ[i].op) & F_STORE)
+				      && (ctx->LSQ[i].addr == rs->addr))
 				    {
 				      /* hit in the LSQ */
 				      load_lat = 1;
@@ -2780,7 +2871,7 @@ ruu_issue(void)
 				    }
 
 				  /* scan finished? */
-				  if (i == LSQ_head)
+				  if (i == ctx->LSQ_head)
 				    break;
 				}
 			    }
@@ -2790,7 +2881,7 @@ ruu_issue(void)
 			    {
 			      int valid_addr = MD_VALID_ADDR(rs->addr);
 
-			      if (!spec_mode && !valid_addr)
+			      if (!ctx->spec_mode && !valid_addr)
 				sim_invalid_addrs++;
 
 			      /* no! go to the data cache if addr is valid */
@@ -2919,17 +3010,17 @@ ruu_issue(void)
 
 /* integer register file */
 #define R_BMAP_SZ       (BITMAP_SIZE(MD_NUM_IREGS))
-static BITMAP_TYPE(MD_NUM_IREGS, use_spec_R);
+/* static BITMAP_TYPE(MD_NUM_IREGS, use_spec_R); */
 // static md_gpr_t spec_regs_R;
 
 /* floating point register file */
 #define F_BMAP_SZ       (BITMAP_SIZE(MD_NUM_FREGS))
-static BITMAP_TYPE(MD_NUM_FREGS, use_spec_F);
+/* static BITMAP_TYPE(MD_NUM_FREGS, use_spec_F); */
 // static md_fpr_t spec_regs_F;
 
 /* miscellaneous registers */
 #define C_BMAP_SZ       (BITMAP_SIZE(MD_NUM_CREGS))
-static BITMAP_TYPE(MD_NUM_FREGS, use_spec_C);
+/* static BITMAP_TYPE(MD_NUM_FREGS, use_spec_C); */
 // static md_ctrl_t spec_regs_C;
 
 /* dump speculative register state */
@@ -2937,19 +3028,21 @@ static void
 rspec_dump(FILE *stream)			/* output stream */
 {
   int i;
-  struct regs_t *spec_regs = &contexts[0].spec_regs;
+  struct context_t *ctx = &contexts[0];
+  struct regs_t *spec_regs = &ctx->spec_regs;
 
+  /* SMT-FIXME only contexts[0] */
   if (!stream)
     stream = stderr;
 
   fprintf(stream, "** speculative register contents **\n");
 
-  fprintf(stream, "spec_mode: %s\n", spec_mode ? "t" : "f");
+  fprintf(stream, "spec_mode: %s\n", ctx->spec_mode ? "t" : "f");
 
   /* dump speculative integer regs */
   for (i=0; i < MD_NUM_IREGS; i++)
     {
-      if (BITMAP_SET_P(use_spec_R, R_BMAP_SZ, i))
+      if (BITMAP_SET_P(ctx->use_spec_R, R_BMAP_SZ, i))
 	{
 	  md_print_ireg(spec_regs->regs_R, i, stream);
 	  fprintf(stream, "\n");
@@ -2959,7 +3052,7 @@ rspec_dump(FILE *stream)			/* output stream */
   /* dump speculative FP regs */
   for (i=0; i < MD_NUM_FREGS; i++)
     {
-      if (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, i))
+      if (BITMAP_SET_P(ctx->use_spec_F, F_BMAP_SZ, i))
 	{
 	  md_print_fpreg(spec_regs->regs_F, i, stream);
 	  fprintf(stream, "\n");
@@ -2969,7 +3062,7 @@ rspec_dump(FILE *stream)			/* output stream */
   /* dump speculative CTRL regs */
   for (i=0; i < MD_NUM_CREGS; i++)
     {
-      if (BITMAP_SET_P(use_spec_C, C_BMAP_SZ, i))
+      if (BITMAP_SET_P(ctx->use_spec_C, C_BMAP_SZ, i))
 	{
 	  md_print_creg(spec_regs->regs_C, i, stream);
 	  fprintf(stream, "\n");
@@ -3029,16 +3122,16 @@ tracer_recover(int ctx_id)
   struct context_t *ctx = &contexts[ctx_id];
 
   /* better be in mis-speculative trace generation mode */
-  if (!spec_mode)
+  if (!ctx->spec_mode)
     panic("cannot recover unless in speculative mode");
 
   /* reset to non-speculative trace generation mode */
-  spec_mode = FALSE;
+  ctx->spec_mode = FALSE;
 
   /* reset copied-on-write register bitmasks back to non-speculative state */
-  BITMAP_CLEAR_MAP(use_spec_R, R_BMAP_SZ);
-  BITMAP_CLEAR_MAP(use_spec_F, F_BMAP_SZ);
-  BITMAP_CLEAR_MAP(use_spec_C, C_BMAP_SZ);
+  BITMAP_CLEAR_MAP(ctx->use_spec_R, R_BMAP_SZ);
+  BITMAP_CLEAR_MAP(ctx->use_spec_F, F_BMAP_SZ);
+  BITMAP_CLEAR_MAP(ctx->use_spec_C, C_BMAP_SZ);
 
   /* reset memory state back to non-speculative state */
   /* FIXME: could version stamps be used here?!?!? */
@@ -3080,13 +3173,18 @@ tracer_init(void)
 {
   int i;
 
-  /* initially in non-speculative mode */
-  spec_mode = FALSE;
+  for (i = 0; i < NUM_CONTEXTS; i++)
+    {
+      struct context_t *ctx = &contexts[i];
 
-  /* register state is from non-speculative state buffers */
-  BITMAP_CLEAR_MAP(use_spec_R, R_BMAP_SZ);
-  BITMAP_CLEAR_MAP(use_spec_F, F_BMAP_SZ);
-  BITMAP_CLEAR_MAP(use_spec_C, C_BMAP_SZ);
+      /* initially in non-speculative mode */
+      ctx->spec_mode = FALSE;
+
+      /* register state is from non-speculative state buffers */
+      BITMAP_CLEAR_MAP(ctx->use_spec_R, R_BMAP_SZ);
+      BITMAP_CLEAR_MAP(ctx->use_spec_F, F_BMAP_SZ);
+      BITMAP_CLEAR_MAP(ctx->use_spec_C, C_BMAP_SZ);
+    }
 
   /* memory state is from non-speculative memory pages */
   for (i=0; i<STORE_HASH_SIZE; i++)
@@ -3294,7 +3392,8 @@ mspec_dump(FILE *stream)			/* output stream */
 
   fprintf(stream, "** speculative memory contents **\n");
 
-  fprintf(stream, "spec_mode: %s\n", spec_mode ? "t" : "f");
+  /* SMT-FIXME only contexts[0] */
+  fprintf(stream, "spec_mode: %s\n", contexts[0].spec_mode ? "t" : "f");
 
   for (i=0; i<STORE_HASH_SIZE; i++)
     {
@@ -3318,13 +3417,16 @@ simoo_mem_obj(struct mem_t *mem,		/* memory space to access */
 	      int nbytes)			/* size of access */
 {
   enum mem_cmd cmd;
+  struct context_t *ctx = &contexts[mem->context_id];
 
   if (!is_write)
     cmd = Read;
   else
     cmd = Write;
 
-  if (spec_mode)
+  printf("being used??\n");
+
+  if (ctx->spec_mode)
     spec_mem_access(mem, cmd, addr, p, nbytes);
   else
     mem_access(mem, cmd, addr, p, nbytes);
@@ -3347,6 +3449,7 @@ ruu_link_idep(struct RUU_station *rs,		/* rs station to link */
 {
   struct CV_link head;
   struct RS_link *link;
+  struct context_t *ctx = &contexts[rs->context_id];
 
   /* any dependence? */
   if (idep_name == NA)
@@ -3386,6 +3489,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 		 int odep_name)			/* output register name */
 {
   struct CV_link cv;
+  struct context_t *ctx = &contexts[rs->context_id];
 
   /* any dependence? */
   if (odep_name == NA)
@@ -3467,12 +3571,12 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* general purpose register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define GPR(N)                  (BITMAP_SET_P(use_spec_R, R_BMAP_SZ, (N))\
+#define GPR(N)                  (BITMAP_SET_P(ctx->use_spec_R, R_BMAP_SZ, (N))\
 				 ? spec_regs->regs_R[N]                       \
 				 : regs->regs_R[N])
-#define SET_GPR(N,EXPR)         (spec_mode				\
+#define SET_GPR(N,EXPR)         (ctx->spec_mode				\
 				 ? ((spec_regs->regs_R[N] = (EXPR)),		\
-				    BITMAP_SET(use_spec_R, R_BMAP_SZ, (N)),\
+				    BITMAP_SET(ctx->use_spec_R, R_BMAP_SZ, (N)),\
 				    spec_regs->regs_R[N])			\
 				 : (regs->regs_R[N] = (EXPR)))
 
@@ -3481,56 +3585,56 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* floating point register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define FPR_L(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
+#define FPR_L(N)                (BITMAP_SET_P(ctx->use_spec_F, F_BMAP_SZ, ((N)&~1))\
 				 ? spec_regs->regs_F.l[(N)]                   \
 				 : regs->regs_F.l[(N)])
 #define SET_FPR_L(N,EXPR)       (spec_mode				\
 				 ? ((spec_regs->regs_F.l[(N)] = (EXPR)),	\
-				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
+				    BITMAP_SET(ctx->use_spec_F,F_BMAP_SZ,((N)&~1)),\
 				    spec_regs->regs_F.l[(N)])			\
 				 : (regs->regs_F.l[(N)] = (EXPR)))
-#define FPR_F(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
+#define FPR_F(N)                (BITMAP_SET_P(ctx->use_spec_F, F_BMAP_SZ, ((N)&~1))\
 				 ? spec_regs->regs_F.f[(N)]                   \
 				 : regs->regs_F.f[(N)])
 #define SET_FPR_F(N,EXPR)       (spec_mode				\
 				 ? ((spec_regs->regs_F.f[(N)] = (EXPR)),	\
-				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
+				    BITMAP_SET(ctx->use_spec_F,F_BMAP_SZ,((N)&~1)),\
 				    spec_regs->regs_F.f[(N)])			\
 				 : (regs->regs_F.f[(N)] = (EXPR)))
-#define FPR_D(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
+#define FPR_D(N)                (BITMAP_SET_P(ctx->use_spec_F, F_BMAP_SZ, ((N)&~1))\
 				 ? spec_regs->regs_F.d[(N) >> 1]              \
 				 : regs->regs_F.d[(N) >> 1])
 #define SET_FPR_D(N,EXPR)       (spec_mode				\
 				 ? ((spec_regs->regs_F.d[(N) >> 1] = (EXPR)),	\
-				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
+				    BITMAP_SET(ctx->use_spec_F,F_BMAP_SZ,((N)&~1)),\
 				    spec_regs->regs_F.d[(N) >> 1])		\
 				 : (regs->regs_F.d[(N) >> 1] = (EXPR)))
 
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define HI			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*hi*/0)\
+#define HI			(BITMAP_SET_P(ctx->use_spec_C, C_BMAP_SZ, /*hi*/0)\
 				 ? spec_regs->regs_C.hi			\
 				 : regs->regs_C.hi)
 #define SET_HI(EXPR)		(spec_mode				\
 				 ? ((spec_regs->regs_C.hi = (EXPR)),		\
-				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*hi*/0),\
+				    BITMAP_SET(ctx->use_spec_C, C_BMAP_SZ,/*hi*/0),\
 				    spec_regs->regs_C.hi)			\
 				 : (regs->regs_C.hi = (EXPR)))
-#define LO			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*lo*/1)\
+#define LO			(BITMAP_SET_P(ctx->use_spec_C, C_BMAP_SZ, /*lo*/1)\
 				 ? spec_regs->regs_C.lo			\
 				 : regs->regs_C.lo)
 #define SET_LO(EXPR)		(spec_mode				\
 				 ? ((spec_regs->regs_C.lo = (EXPR)),		\
-				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*lo*/1),\
+				    BITMAP_SET(ctx->use_spec_C, C_BMAP_SZ,/*lo*/1),\
 				    spec_regs->regs_C.lo)			\
 				 : (regs->regs_C.lo = (EXPR)))
-#define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
+#define FCC			(BITMAP_SET_P(ctx->use_spec_C, C_BMAP_SZ,/*fcc*/2)\
 				 ? spec_regs->regs_C.fcc			\
 				 : regs->regs_C.fcc)
 #define SET_FCC(EXPR)		(spec_mode				\
 				 ? ((spec_regs->regs_C.fcc = (EXPR)),		\
-				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/2),\
+				    BITMAP_SET(ctx->use_spec_C,C_BMAP_SZ,/*fcc*/2),\
 				    spec_regs->regs_C.fcc)			\
 				 : (regs->regs_C.fcc = (EXPR)))
 
@@ -3539,48 +3643,48 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* floating point register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define FPR_Q(N)		(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
+#define FPR_Q(N)		(BITMAP_SET_P(ctx->use_spec_F, F_BMAP_SZ, (N))\
 				 ? spec_regs->regs_F.q[(N)]                   \
 				 : regs->regs_F.q[(N)])
-#define SET_FPR_Q(N,EXPR)	(spec_mode				\
+#define SET_FPR_Q(N,EXPR)	(ctx->spec_mode				\
 				 ? ((spec_regs->regs_F.q[(N)] = (EXPR)),	\
-				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
+				    BITMAP_SET(ctx->use_spec_F,F_BMAP_SZ, (N)),\
 				    spec_regs->regs_F.q[(N)])			\
 				 : (regs->regs_F.q[(N)] = (EXPR)))
-#define FPR(N)			(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
+#define FPR(N)			(BITMAP_SET_P(ctx->use_spec_F, F_BMAP_SZ, (N))\
 				 ? spec_regs->regs_F.d[(N)]			\
 				 : regs->regs_F.d[(N)])
-#define SET_FPR(N,EXPR)		(spec_mode				\
+#define SET_FPR(N,EXPR)		(ctx->spec_mode				\
 				 ? ((spec_regs->regs_F.d[(N)] = (EXPR)),	\
-				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
+				    BITMAP_SET(ctx->use_spec_F,F_BMAP_SZ, (N)),\
 				    spec_regs->regs_F.d[(N)])			\
 				 : (regs->regs_F.d[(N)] = (EXPR)))
 
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
-#define FPCR			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fpcr*/0)\
+#define FPCR			(BITMAP_SET_P(ctx->use_spec_C, C_BMAP_SZ,/*fpcr*/0)\
 				 ? spec_regs->regs_C.fpcr			\
 				 : regs->regs_C.fpcr)
-#define SET_FPCR(EXPR)		(spec_mode				\
+#define SET_FPCR(EXPR)		(ctx->spec_mode				\
 				 ? ((spec_regs->regs_C.fpcr = (EXPR)),	\
-				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fpcr*/0),\
+				   BITMAP_SET(ctx->use_spec_C,C_BMAP_SZ,/*fpcr*/0),\
 				    spec_regs->regs_C.fpcr)			\
 				 : (regs->regs_C.fpcr = (EXPR)))
-#define UNIQ			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*uniq*/1)\
+#define UNIQ			(BITMAP_SET_P(ctx->use_spec_C, C_BMAP_SZ,/*uniq*/1)\
 				 ? spec_regs->regs_C.uniq			\
 				 : regs->regs_C.uniq)
-#define SET_UNIQ(EXPR)		(spec_mode				\
+#define SET_UNIQ(EXPR)		(ctx->spec_mode				\
 				 ? ((spec_regs->regs_C.uniq = (EXPR)),	\
-				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*uniq*/1),\
+				   BITMAP_SET(ctx->use_spec_C,C_BMAP_SZ,/*uniq*/1),\
 				    spec_regs->regs_C.uniq)			\
 				 : (regs->regs_C.uniq = (EXPR)))
-#define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
+#define FCC			(BITMAP_SET_P(ctx->use_spec_C, C_BMAP_SZ,/*fcc*/2)\
 				 ? spec_regs->regs_C.fcc			\
 				 : regs->regs_C.fcc)
-#define SET_FCC(EXPR)		(spec_mode				\
+#define SET_FCC(EXPR)		(ctx->spec_mode				\
 				 ? ((spec_regs->regs_C.fcc = (EXPR)),		\
-				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/1),\
+				    BITMAP_SET(ctx->use_spec_C,C_BMAP_SZ,/*fcc*/1),\
 				    spec_regs->regs_C.fcc)			\
 				 : (regs->regs_C.fcc = (EXPR)))
 
@@ -3593,7 +3697,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
    tracer_recover() for details on this process */
 #define __READ_SPECMEM(SRC, SRC_V, FAULT)				\
   (addr = (SRC),							\
-   (spec_mode								\
+   (ctx->spec_mode								\
     ? ((FAULT) = spec_mem_access(mem, Read, addr, &SRC_V, sizeof(SRC_V)))\
     : ((FAULT) = mem_access(mem, Read, addr, &SRC_V, sizeof(SRC_V)))),	\
    SRC_V)
@@ -3612,7 +3716,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 
 #define __WRITE_SPECMEM(SRC, DST, DST_V, FAULT)				\
   (DST_V = (SRC), addr = (DST),						\
-   (spec_mode								\
+   (ctx->spec_mode								\
     ? ((FAULT) = spec_mem_access(mem, Write, addr, &DST_V, sizeof(DST_V)))\
     : ((FAULT) = mem_access(mem, Write, addr, &DST_V, sizeof(DST_V)))))
 
@@ -3630,7 +3734,7 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
 /* system call handler macro */
 #define SYSCALL(INST)							\
   (/* only execute system calls in non-speculative mode */		\
-   (spec_mode ? panic("speculative syscall") : (void) 0),		\
+   (ctx->spec_mode ? panic("speculative syscall") : (void) 0),		\
    sys_syscall(regs, mem_access, mem, INST, TRUE))
 
 /* default register state accessor, used by DLite */
@@ -3641,8 +3745,11 @@ simoo_reg_obj(struct regs_t *xregs,		/* registers to access */
 	      int reg,				/* register number */
 	      struct eval_value_t *val)		/* input, output */
 {
-  struct regs_t *regs = &contexts[0].regs;
-  struct regs_t *spec_regs = &contexts[0].spec_regs;
+  struct context_t *ctx = &contexts[xregs->context_id];
+  struct regs_t *regs = &ctx->regs;
+  struct regs_t *spec_regs = &ctx->spec_regs;
+
+  assert(regs == xregs);
 
  switch (rt)
     {
@@ -3802,14 +3909,17 @@ ruu_dispatch(void)
 
   /* printf("dispatching context %d\n", ctx_id); */
 
+  /* if (ctx_id != 0) */
+  /*   return; */
+
   while (/* instruction decode B/W left? */
 	 n_dispatched < (ruu_decode_width * fetch_speed)
 	 /* RUU and LSQ not full? */
-	 && RUU_num < RUU_size && LSQ_num < LSQ_size
+	 && ctx->RUU_num < RUU_size && ctx->LSQ_num < LSQ_size
 	 /* insts still available from fetch unit? */
 	 && ctx->fetch_num != 0
 	 /* on an acceptable trace path */
-	 && (ruu_include_spec || !spec_mode))
+	 && (ruu_include_spec || !ctx->spec_mode))
     {
       /* if issuing in-order, block until last op issues if inorder issue */
       if (ruu_inorder_issue
@@ -3837,12 +3947,12 @@ ruu_dispatch(void)
       /* drain RUU for TRAPs and system calls */
       if (MD_OP_FLAGS(op) & F_TRAP)
 	{
-	  if (RUU_num != 0)
+	  if (ctx->RUU_num != 0)
 	    break;
 
 	  /* else, syscall is only instruction in the machine, at this
 	     point we should not be in (mis-)speculative mode */
-	  if (spec_mode)
+	  if (ctx->spec_mode)
 	    panic("drained and speculative");
 	}
 
@@ -3852,7 +3962,7 @@ ruu_dispatch(void)
       regs->regs_F.d[MD_REG_ZERO] = 0.0; spec_regs->regs_F.d[MD_REG_ZERO] = 0.0;
 #endif /* TARGET_ALPHA */
 
-      if (!spec_mode)
+      if (!ctx->spec_mode)
 	{
 	  /* one more non-speculative instruction executed */
 	  sim_num_insn++;
@@ -3892,7 +4002,7 @@ ruu_dispatch(void)
 	     the mis-speculated instruction paths */
 #define DECLARE_FAULT(FAULT)						\
 	  {								\
-	    if (!spec_mode)						\
+	    if (!ctx->spec_mode)						\
 	      fault = (FAULT);						\
 	    /* else, spec fault, ignore it, always terminate exec... */	\
 	    break;							\
@@ -3909,7 +4019,7 @@ ruu_dispatch(void)
       /* operation sets next PC */
 
       /* print retirement trace if in verbose mode */
-      if (!spec_mode && verbose)
+      if (!ctx->spec_mode && verbose)
         {
           myfprintf(stderr, "++ %10n [xor: 0x%08x] {%d} @ 0x%08p: ",
                     sim_num_insn, md_xor_regs(regs),
@@ -3927,7 +4037,7 @@ ruu_dispatch(void)
       if (MD_OP_FLAGS(op) & F_MEM)
 	{
 	  sim_total_refs++;
-	  if (!spec_mode)
+	  if (!ctx->spec_mode)
 	    sim_num_refs++;
 
 	  if (MD_OP_FLAGS(op) & F_STORE)
@@ -3935,7 +4045,7 @@ ruu_dispatch(void)
 	  else
 	    {
 	      sim_total_loads++;
-	      if (!spec_mode)
+	      if (!ctx->spec_mode)
 		sim_num_loads++;
 	    }
 	}
@@ -4000,8 +4110,9 @@ ruu_dispatch(void)
 	   */
 
 	  /* fill in RUU reservation station */
-	  rs = &RUU[RUU_tail];
+	  rs = &ctx->RUU[ctx->RUU_tail];
           rs->slip = sim_cycle - 1;
+          rs->context_id = ctx_id;
 	  rs->IR = inst;
 	  rs->op = op;
 	  rs->PC = regs->regs_PC;
@@ -4011,7 +4122,7 @@ ruu_dispatch(void)
 	  rs->recover_inst = FALSE;
           rs->dir_update = *dir_update_ptr;
 	  rs->stack_recover_idx = stack_recover_idx;
-	  rs->spec_mode = spec_mode;
+	  rs->spec_mode = ctx->spec_mode;
 	  rs->addr = 0;
 	  /* rs->tag is already set */
 	  rs->seq = ++inst_seq;
@@ -4026,8 +4137,9 @@ ruu_dispatch(void)
 	      rs->ea_comp = TRUE;
 
 	      /* fill in LSQ reservation station */
-	      lsq = &LSQ[LSQ_tail];
+	      lsq = &ctx->LSQ[ctx->LSQ_tail];
               lsq->slip = sim_cycle - 1;
+              lsq->context_id = ctx_id;
 	      lsq->IR = inst;
 	      lsq->op = op;
 	      lsq->PC = regs->regs_PC;
@@ -4038,7 +4150,7 @@ ruu_dispatch(void)
 	      lsq->dir_update.pdir1 = lsq->dir_update.pdir2 = NULL;
 	      lsq->dir_update.pmeta = NULL;
 	      lsq->stack_recover_idx = 0;
-	      lsq->spec_mode = spec_mode;
+	      lsq->spec_mode = ctx->spec_mode;
 	      lsq->addr = addr;
 	      /* lsq->tag is already set */
 	      lsq->seq = ++inst_seq;
@@ -4073,10 +4185,10 @@ ruu_dispatch(void)
 
 	      /* install operation in the RUU and LSQ */
 	      n_dispatched++;
-	      RUU_tail = (RUU_tail + 1) % RUU_size;
-	      RUU_num++;
-	      LSQ_tail = (LSQ_tail + 1) % LSQ_size;
-	      LSQ_num++;
+	      ctx->RUU_tail = (ctx->RUU_tail + 1) % RUU_size;
+	      ctx->RUU_num++;
+	      ctx->LSQ_tail = (ctx->LSQ_tail + 1) % LSQ_size;
+	      ctx->LSQ_num++;
 
 	      if (OPERANDS_READY(rs))
 		{
@@ -4108,8 +4220,8 @@ ruu_dispatch(void)
 
 	      /* install operation in the RUU */
 	      n_dispatched++;
-	      RUU_tail = (RUU_tail + 1) % RUU_size;
-	      RUU_num++;
+	      ctx->RUU_tail = (ctx->RUU_tail + 1) % RUU_size;
+	      ctx->RUU_num++;
 
 	      /* issue op if all its reg operands are ready (no mem input) */
 	      if (OPERANDS_READY(rs))
@@ -4137,7 +4249,7 @@ ruu_dispatch(void)
       if (MD_OP_FLAGS(op) & F_CTRL)
 	sim_total_branches++;
 
-      if (!spec_mode)
+      if (!ctx->spec_mode)
 	{
 #if 0 /* moved above for EIO trace file support */
 	  /* one more non-speculative instruction executed */
@@ -4168,7 +4280,7 @@ ruu_dispatch(void)
 	  if (ctx->pred_PC != regs->regs_NPC && !fetch_redirected[ctx_id])
 	    {
 	      /* entering mis-speculation mode, indicate this and save PC */
-	      spec_mode = TRUE;
+	      ctx->spec_mode = TRUE;
 	      rs->recover_inst = TRUE;
 	      ctx->recover_PC = regs->regs_NPC;
 	    }
@@ -4220,8 +4332,9 @@ ruu_dispatch(void)
 	dlite_main(regs->regs_PC, /* no next PC */0, sim_cycle, regs, mem);
     }
 
-  /* Round-robin dispatch: FIXME */
-  /* ctx_id = (ctx_id + 1) % NUM_CONTEXTS; */
+  /* Round-robin dispatch: SMT-FIXME */
+  /* SMT-TODO: find a thread that can be dispatched from */
+  ctx_id = (ctx_id + 1) % NUM_CONTEXTS;
 }
 
 
@@ -4265,7 +4378,7 @@ fetch_dump(FILE *stream)			/* output stream */
 
   fprintf(stream, "** fetch stage state **\n");
 
-  fprintf(stream, "spec_mode: %s\n", spec_mode ? "t" : "f");
+  fprintf(stream, "spec_mode: %s\n", contexts[0].spec_mode ? "t" : "f");
   myfprintf(stream, "contexts[0].pred_PC: 0x%08p, contexts[0].recover_PC: 0x%08p\n",
 	    contexts[0].pred_PC, contexts[0].recover_PC);
   myfprintf(stream, "contexts[0].fetch_regs_PC: 0x%08p, contexts[0].fetch_pred_PC: 0x%08p\n",
@@ -4536,25 +4649,31 @@ simoo_mstate_obj(FILE *stream,			/* output stream */
 void
 sim_main(void)
 {
-  struct regs_t *regs = &contexts[0].regs;
-  struct regs_t *spec_regs = &contexts[0].spec_regs;
-  struct mem_t *mem = &contexts[0].mem;
+  int i;
 
   /* ignore any floating point exceptions, they may occur on mis-speculated
      execution paths */
   signal(SIGFPE, SIG_IGN);
 
-  /* set up program entry state */
-  regs->regs_PC = ld_prog_entry;
-  regs->regs_NPC = regs->regs_PC + sizeof(md_inst_t);
+  for (i = 0; i < NUM_CONTEXTS; i++)
+    {
+      struct context_t *ctx = &contexts[i];
+      struct regs_t *regs = &ctx->regs;
+      struct mem_t *mem = ctx->mem;
 
-  /* check for DLite debugger entry condition */
-  if (dlite_check_break(regs->regs_PC, /* no access */0, /* addr */0, 0, 0))
-    dlite_main(regs->regs_PC, regs->regs_PC + sizeof(md_inst_t),
-	       sim_cycle, regs, mem);
+      /* set up program entry state */
+      regs->regs_PC = ld_prog_entry;
+      regs->regs_NPC = regs->regs_PC + sizeof(md_inst_t);
+
+      /* check for DLite debugger entry condition */
+      if (dlite_check_break(regs->regs_PC, /* no access */0, /* addr */0, 0, 0))
+        dlite_main(regs->regs_PC, regs->regs_PC + sizeof(md_inst_t),
+                   sim_cycle, regs, mem);
+    }
 
   /* fast forward simulator loop, performs functional simulation for
      FASTFWD_COUNT insts, then turns on performance (timing) simulation */
+  /* SMT-FIXME: only fastforwards context[0] */
   if (fastfwd_count > 0)
     {
       int icount;
@@ -4570,6 +4689,10 @@ sim_main(void)
       qword_t temp_qword = 0;		/* " ditto " */
 #endif /* HOST_HAS_QWORD */
       enum md_fault_type fault;
+      struct context_t *ctx = &contexts[0];
+      struct regs_t *regs = &ctx->regs;
+      struct regs_t *spec_regs = &ctx->spec_regs;
+      struct mem_t *mem = ctx->mem;
 
       fprintf(stderr, "sim: ** fast forwarding %d insts **\n", fastfwd_count);
 
@@ -4638,30 +4761,44 @@ sim_main(void)
   fprintf(stderr, "sim: ** starting performance simulation **\n");
 
   /* set up timing simulation entry state */
-  contexts[0].fetch_regs_PC = regs->regs_PC - sizeof(md_inst_t);
-  contexts[0].fetch_pred_PC = regs->regs_PC;
-  regs->regs_PC = regs->regs_PC - sizeof(md_inst_t);
+  for (i = 0; i < NUM_CONTEXTS; i++)
+    {
+      struct context_t *ctx = &contexts[i];
+      ctx->fetch_regs_PC = ctx->regs.regs_PC - sizeof(md_inst_t);
+      ctx->fetch_pred_PC = ctx->regs.regs_PC;
+      ctx->regs.regs_PC = ctx->regs.regs_PC - sizeof(md_inst_t);
+    }
 
   /* main simulator loop, NOTE: the pipe stages are traverse in reverse order
      to eliminate this/next state synchronization and relaxation problems */
   for (;;)
     {
-      /* RUU/LSQ sanity checks */
-      if (RUU_num < LSQ_num)
-	panic("RUU_num < LSQ_num");
-      if (((RUU_head + RUU_num) % RUU_size) != RUU_tail)
-	panic("RUU_head/RUU_tail wedged");
-      if (((LSQ_head + LSQ_num) % LSQ_size) != LSQ_tail)
-	panic("LSQ_head/LSQ_tail wedged");
+      /* RUU/LSQ sanity checks, for each thread */
+      int i;
+      for (i = 0; i < NUM_CONTEXTS; i++)
+        {
+          struct context_t *ctx = &contexts[i];
+          struct regs_t *regs = &ctx->regs;
 
-      /* check if pipetracing is still active */
-      ptrace_check_active(regs->regs_PC, sim_num_insn, sim_cycle);
+          if (ctx->RUU_num < ctx->LSQ_num)
+            panic("RUU_num < LSQ_num");
+          if (((ctx->RUU_head + ctx->RUU_num) % RUU_size) != ctx->RUU_tail)
+            panic("RUU_head/RUU_tail wedged");
+          if (((ctx->LSQ_head + ctx->LSQ_num) % LSQ_size) != ctx->LSQ_tail)
+            panic("LSQ_head/LSQ_tail wedged");
+
+          /* check if pipetracing is still active */
+          ptrace_check_active(regs->regs_PC, sim_num_insn, sim_cycle);
+        }
 
       /* indicate new cycle in pipetrace */
       ptrace_newcycle(sim_cycle);
 
       /* commit entries from RUU/LSQ to architected register file */
-      ruu_commit();
+      for (i = 0; i < NUM_CONTEXTS; i++)
+        {
+          ruu_commit(i);
+        }
 
       /* service function unit release events */
       ruu_release_fu();
@@ -4676,7 +4813,11 @@ sim_main(void)
 	{
 	  /* try to locate memory operations that are ready to execute */
 	  /* ==> inserts operations into ready queue --> mem deps resolved */
-	  lsq_refresh();
+          for (i = 0; i < NUM_CONTEXTS; i++)
+            {
+              /* for all threads */
+              lsq_refresh(i);
+            }
 
 	  /* issue operations ready to execute from a previous cycle */
 	  /* <== drains ready queue <-- ready operations commence execution */
@@ -4691,9 +4832,13 @@ sim_main(void)
 	{
 	  /* try to locate memory operations that are ready to execute */
 	  /* ==> inserts operations into ready queue --> mem deps resolved */
-	  lsq_refresh();
+          for (i = 0; i < NUM_CONTEXTS; i++)
+            {
+              /* for all threads */
+              lsq_refresh(i);
+            }
 
-	  /* issue operations ready to execute from a previous cycle */
+	  /* issuen operations ready to execute from a previous cycle */
 	  /* <== drains ready queue <-- ready operations commence execution */
 	  ruu_issue();
 	}
@@ -4708,10 +4853,10 @@ sim_main(void)
       /* SMT-FIXME only contexts[0] */
       IFQ_count += contexts[0].fetch_num;
       IFQ_fcount += ((contexts[0].fetch_num == ruu_ifq_size) ? 1 : 0);
-      RUU_count += RUU_num;
-      RUU_fcount += ((RUU_num == RUU_size) ? 1 : 0);
-      LSQ_count += LSQ_num;
-      LSQ_fcount += ((LSQ_num == LSQ_size) ? 1 : 0);
+      RUU_count += contexts[0].RUU_num;
+      RUU_fcount += ((contexts[0].RUU_num == RUU_size) ? 1 : 0);
+      LSQ_count += contexts[0].LSQ_num;
+      LSQ_fcount += ((contexts[0].LSQ_num == LSQ_size) ? 1 : 0);
 
       /* go to next cycle */
       sim_cycle++;

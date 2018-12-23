@@ -73,6 +73,7 @@ struct mem_pte_t {
 
 /* memory object */
 struct mem_t {
+    int context_id;			/* context that this memory belongs to */
   /* memory object state */
   char *name;				/* name of this memory space */
   struct mem_pte_t *ptab[MEM_PTAB_SIZE];/* inverted page table */

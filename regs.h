@@ -98,6 +98,7 @@
  */
 
 struct regs_t {
+  int context_id;		/* context that this architectural register file belongs to */
   md_gpr_t regs_R;		/* (signed) integer register file */
   md_fpr_t regs_F;		/* floating point register file */
   md_ctrl_t regs_C;		/* control register file */
