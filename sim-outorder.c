@@ -80,7 +80,7 @@
  * pipeline operations.
  */
 
-#define NUM_CONTEXTS 4
+#define NUM_CONTEXTS 8
 
 /*
  * the create vector maps a logical register to a creator in the RUU (and
@@ -144,6 +144,11 @@ static struct context_t {
 
   tick_t create_vector_rt[MD_TOTAL_REGS];
   tick_t spec_create_vector_rt[MD_TOTAL_REGS];
+
+  /* number of instructions currently in the decode, renaming and
+     instruction queue that belong to this context.  Used for ICOUNT
+     fetch policy for SMT. */
+  int icount;
 } contexts[NUM_CONTEXTS];
 
 /* simulated registers */
@@ -3157,6 +3162,7 @@ tracer_recover(int ctx_id)
     }
 
   /* reset IFETCH state */
+  ctx->icount -= ctx->fetch_num;
   ctx->fetch_num = 0;
   ctx->fetch_tail = ctx->fetch_head = 0;
   ctx->fetch_pred_PC = ctx->fetch_regs_PC = ctx->recover_PC;
@@ -4067,6 +4073,7 @@ ruu_dispatch(void)
           misfetch_count++;
           recovery_count++;
 
+          ctx->icount -= (ctx->fetch_num - 1);
 	  ctx->fetch_head = (ruu_ifq_size-1);
 	  ctx->fetch_num = 1;
 	  ctx->fetch_tail = 0;
@@ -4184,6 +4191,7 @@ ruu_dispatch(void)
 	      ctx->RUU_num++;
 	      ctx->LSQ_tail = (ctx->LSQ_tail + 1) % LSQ_size;
 	      ctx->LSQ_num++;
+              ctx->icount--;
 
 	      if (OPERANDS_READY(rs))
 		{
@@ -4217,6 +4225,7 @@ ruu_dispatch(void)
 	      n_dispatched++;
 	      ctx->RUU_tail = (ctx->RUU_tail + 1) % RUU_size;
 	      ctx->RUU_num++;
+              ctx->icount--;
 
 	      /* issue op if all its reg operands are ready (no mem input) */
 	      if (OPERANDS_READY(rs))
@@ -4412,24 +4421,23 @@ ruu_fetch(void)
   int stack_recover_idx;
   int branch_cnt;
   static int pivot = 0;
+  int ctx_id;
   enum md_opcode op;
-  struct context_t *ctx;
-  struct mem_t *mem;
 
-  /* points to the current thread context being fetched */
-  ctx = &contexts[pivot];
-  mem = ctx->mem;
+  ctx_id = pivot;
 
   for (i=0, branch_cnt=0;
        /* fetch up to as many instruction as the DISPATCH stage can decode */
        i < (ruu_decode_width * fetch_speed)
        /* fetch until IFETCH -> DISPATCH queue fills */
-       && ctx->fetch_num < ruu_ifq_size
+       && contexts[ctx_id].fetch_num < ruu_ifq_size
        /* and no IFETCH blocking condition encountered */
        && !done;
        i++)
     {
-      int ctx_id;
+      /* points to the current thread context being fetched */
+      struct context_t *ctx = &contexts[ctx_id];
+      struct mem_t *mem = ctx->mem;
 
       /* fetch an instruction at the next predicted fetch address */
       ctx->fetch_regs_PC = ctx->fetch_pred_PC;
@@ -4554,6 +4562,8 @@ ruu_fetch(void)
       /* adjust instruction fetch queue */
       ctx->fetch_tail = (ctx->fetch_tail + 1) & (ruu_ifq_size - 1);
       ctx->fetch_num++;
+      ctx->icount++;
+      printf("ctx[%d]->icount=%d\n", ctx_id, ctx->icount);
 
       /* SMT: share fetch bandwidth: fetch from one thread in the first half, and
          from another in the second half */
@@ -4562,8 +4572,6 @@ ruu_fetch(void)
         {
           ctx_id = (pivot + NUM_CONTEXTS / 2) % NUM_CONTEXTS;
         }
-      ctx = &contexts[ctx_id];
-      mem = ctx->mem;
     }
 
   /* update the index of which context to be fetched next FIXME */
