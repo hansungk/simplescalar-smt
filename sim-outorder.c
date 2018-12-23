@@ -1517,11 +1517,6 @@ sim_load_prog(char *fname,		/* program to load */
     {
       struct context_t *ctx = &contexts[i];
       ld_load_prog(fname, argc, argv, envp, &ctx->regs, ctx->mem, TRUE);
-
-      /* SMT-FIXME needed? */
-      /* ctx->regs.regs_PC = ctx->mem->ld_prog_entry; */
-      /* ctx->regs.regs_NPC = ctx->mem->ld_prog_entry + 4; */
-      ctx->regs.context_id = i;
     }
 
   /* initialize here, so symbols can be loaded */

@@ -1,6 +1,12 @@
 SMT
 ===
 
+# Things to do
+
+* Icount feedback
+* Round-robin dispatch + on-demand switch to available thread
+* Load multiple programs
+
 # Things to add
 
 * Program counters per thread
