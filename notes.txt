@@ -14,3 +14,15 @@ SMT
 
 Instructions are executed at the switch stmt in ruu_dispatch().
 (execution before commit?)
+
+Separate RUUs (ROBs)?
+M-Sim implements separate RUUs.
+Shared RUUs complicate branch recovery logic.
+
+## Issue logic
+
+ruu_dispatch(): RSLINK_INIT()?
+
+## Create vector (rename table)
+
+* Only used in ruu_writeback()?
