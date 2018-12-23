@@ -86,14 +86,8 @@
 static struct context_t {
   /* simulated registers */
   struct regs_t regs;
+  struct regs_t spec_regs;
   struct mem_t *mem;
-
-  /* integer register file */
-  md_gpr_t spec_regs_R;
-  /* floating point register file */
-  md_fpr_t spec_regs_F;
-  /* miscellaneous registers */
-  md_ctrl_t spec_regs_C;
 } contexts[NUM_CONTEXTS];
 
 /* simulated registers */
@@ -2902,23 +2896,24 @@ ruu_issue(void)
 /* integer register file */
 #define R_BMAP_SZ       (BITMAP_SIZE(MD_NUM_IREGS))
 static BITMAP_TYPE(MD_NUM_IREGS, use_spec_R);
-static md_gpr_t spec_regs_R;
+// static md_gpr_t spec_regs_R;
 
 /* floating point register file */
 #define F_BMAP_SZ       (BITMAP_SIZE(MD_NUM_FREGS))
 static BITMAP_TYPE(MD_NUM_FREGS, use_spec_F);
-static md_fpr_t spec_regs_F;
+// static md_fpr_t spec_regs_F;
 
 /* miscellaneous registers */
 #define C_BMAP_SZ       (BITMAP_SIZE(MD_NUM_CREGS))
 static BITMAP_TYPE(MD_NUM_FREGS, use_spec_C);
-static md_ctrl_t spec_regs_C;
+// static md_ctrl_t spec_regs_C;
 
 /* dump speculative register state */
 static void
 rspec_dump(FILE *stream)			/* output stream */
 {
   int i;
+  struct regs_t *spec_regs = &contexts[0].spec_regs;
 
   if (!stream)
     stream = stderr;
@@ -2932,7 +2927,7 @@ rspec_dump(FILE *stream)			/* output stream */
     {
       if (BITMAP_SET_P(use_spec_R, R_BMAP_SZ, i))
 	{
-	  md_print_ireg(spec_regs_R, i, stream);
+	  md_print_ireg(spec_regs->regs_R, i, stream);
 	  fprintf(stream, "\n");
 	}
     }
@@ -2942,7 +2937,7 @@ rspec_dump(FILE *stream)			/* output stream */
     {
       if (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, i))
 	{
-	  md_print_fpreg(spec_regs_F, i, stream);
+	  md_print_fpreg(spec_regs->regs_F, i, stream);
 	  fprintf(stream, "\n");
 	}
     }
@@ -2952,7 +2947,7 @@ rspec_dump(FILE *stream)			/* output stream */
     {
       if (BITMAP_SET_P(use_spec_C, C_BMAP_SZ, i))
 	{
-	  md_print_creg(spec_regs_C, i, stream);
+	  md_print_creg(spec_regs->regs_C, i, stream);
 	  fprintf(stream, "\n");
 	}
     }
@@ -3448,12 +3443,12 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define GPR(N)                  (BITMAP_SET_P(use_spec_R, R_BMAP_SZ, (N))\
-				 ? spec_regs_R[N]                       \
+				 ? spec_regs->regs_R[N]                       \
 				 : regs->regs_R[N])
 #define SET_GPR(N,EXPR)         (spec_mode				\
-				 ? ((spec_regs_R[N] = (EXPR)),		\
+				 ? ((spec_regs->regs_R[N] = (EXPR)),		\
 				    BITMAP_SET(use_spec_R, R_BMAP_SZ, (N)),\
-				    spec_regs_R[N])			\
+				    spec_regs->regs_R[N])			\
 				 : (regs->regs_R[N] = (EXPR)))
 
 #if defined(TARGET_PISA)
@@ -3462,56 +3457,56 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define FPR_L(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
-				 ? spec_regs_F.l[(N)]                   \
+				 ? spec_regs->regs_F.l[(N)]                   \
 				 : regs->regs_F.l[(N)])
 #define SET_FPR_L(N,EXPR)       (spec_mode				\
-				 ? ((spec_regs_F.l[(N)] = (EXPR)),	\
+				 ? ((spec_regs->regs_F.l[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
-				    spec_regs_F.l[(N)])			\
+				    spec_regs->regs_F.l[(N)])			\
 				 : (regs->regs_F.l[(N)] = (EXPR)))
 #define FPR_F(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
-				 ? spec_regs_F.f[(N)]                   \
+				 ? spec_regs->regs_F.f[(N)]                   \
 				 : regs->regs_F.f[(N)])
 #define SET_FPR_F(N,EXPR)       (spec_mode				\
-				 ? ((spec_regs_F.f[(N)] = (EXPR)),	\
+				 ? ((spec_regs->regs_F.f[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
-				    spec_regs_F.f[(N)])			\
+				    spec_regs->regs_F.f[(N)])			\
 				 : (regs->regs_F.f[(N)] = (EXPR)))
 #define FPR_D(N)                (BITMAP_SET_P(use_spec_F, F_BMAP_SZ, ((N)&~1))\
-				 ? spec_regs_F.d[(N) >> 1]              \
+				 ? spec_regs->regs_F.d[(N) >> 1]              \
 				 : regs->regs_F.d[(N) >> 1])
 #define SET_FPR_D(N,EXPR)       (spec_mode				\
-				 ? ((spec_regs_F.d[(N) >> 1] = (EXPR)),	\
+				 ? ((spec_regs->regs_F.d[(N) >> 1] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ,((N)&~1)),\
-				    spec_regs_F.d[(N) >> 1])		\
+				    spec_regs->regs_F.d[(N) >> 1])		\
 				 : (regs->regs_F.d[(N) >> 1] = (EXPR)))
 
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define HI			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*hi*/0)\
-				 ? spec_regs_C.hi			\
+				 ? spec_regs->regs_C.hi			\
 				 : regs->regs_C.hi)
 #define SET_HI(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.hi = (EXPR)),		\
+				 ? ((spec_regs->regs_C.hi = (EXPR)),		\
 				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*hi*/0),\
-				    spec_regs_C.hi)			\
+				    spec_regs->regs_C.hi)			\
 				 : (regs->regs_C.hi = (EXPR)))
 #define LO			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ, /*lo*/1)\
-				 ? spec_regs_C.lo			\
+				 ? spec_regs->regs_C.lo			\
 				 : regs->regs_C.lo)
 #define SET_LO(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.lo = (EXPR)),		\
+				 ? ((spec_regs->regs_C.lo = (EXPR)),		\
 				    BITMAP_SET(use_spec_C, C_BMAP_SZ,/*lo*/1),\
-				    spec_regs_C.lo)			\
+				    spec_regs->regs_C.lo)			\
 				 : (regs->regs_C.lo = (EXPR)))
 #define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
-				 ? spec_regs_C.fcc			\
+				 ? spec_regs->regs_C.fcc			\
 				 : regs->regs_C.fcc)
 #define SET_FCC(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.fcc = (EXPR)),		\
+				 ? ((spec_regs->regs_C.fcc = (EXPR)),		\
 				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/2),\
-				    spec_regs_C.fcc)			\
+				    spec_regs->regs_C.fcc)			\
 				 : (regs->regs_C.fcc = (EXPR)))
 
 #elif defined(TARGET_ALPHA)
@@ -3520,48 +3515,48 @@ ruu_install_odep(struct RUU_station *rs,	/* creating RUU station */
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define FPR_Q(N)		(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
-				 ? spec_regs_F.q[(N)]                   \
+				 ? spec_regs->regs_F.q[(N)]                   \
 				 : regs->regs_F.q[(N)])
 #define SET_FPR_Q(N,EXPR)	(spec_mode				\
-				 ? ((spec_regs_F.q[(N)] = (EXPR)),	\
+				 ? ((spec_regs->regs_F.q[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
-				    spec_regs_F.q[(N)])			\
+				    spec_regs->regs_F.q[(N)])			\
 				 : (regs->regs_F.q[(N)] = (EXPR)))
 #define FPR(N)			(BITMAP_SET_P(use_spec_F, F_BMAP_SZ, (N))\
-				 ? spec_regs_F.d[(N)]			\
+				 ? spec_regs->regs_F.d[(N)]			\
 				 : regs->regs_F.d[(N)])
 #define SET_FPR(N,EXPR)		(spec_mode				\
-				 ? ((spec_regs_F.d[(N)] = (EXPR)),	\
+				 ? ((spec_regs->regs_F.d[(N)] = (EXPR)),	\
 				    BITMAP_SET(use_spec_F,F_BMAP_SZ, (N)),\
-				    spec_regs_F.d[(N)])			\
+				    spec_regs->regs_F.d[(N)])			\
 				 : (regs->regs_F.d[(N)] = (EXPR)))
 
 /* miscellanous register accessors, NOTE: speculative copy on write storage
    provided for fast recovery during wrong path execute (see tracer_recover()
    for details on this process */
 #define FPCR			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fpcr*/0)\
-				 ? spec_regs_C.fpcr			\
+				 ? spec_regs->regs_C.fpcr			\
 				 : regs->regs_C.fpcr)
 #define SET_FPCR(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.fpcr = (EXPR)),	\
+				 ? ((spec_regs->regs_C.fpcr = (EXPR)),	\
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fpcr*/0),\
-				    spec_regs_C.fpcr)			\
+				    spec_regs->regs_C.fpcr)			\
 				 : (regs->regs_C.fpcr = (EXPR)))
 #define UNIQ			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*uniq*/1)\
-				 ? spec_regs_C.uniq			\
+				 ? spec_regs->regs_C.uniq			\
 				 : regs->regs_C.uniq)
 #define SET_UNIQ(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.uniq = (EXPR)),	\
+				 ? ((spec_regs->regs_C.uniq = (EXPR)),	\
 				   BITMAP_SET(use_spec_C,C_BMAP_SZ,/*uniq*/1),\
-				    spec_regs_C.uniq)			\
+				    spec_regs->regs_C.uniq)			\
 				 : (regs->regs_C.uniq = (EXPR)))
 #define FCC			(BITMAP_SET_P(use_spec_C, C_BMAP_SZ,/*fcc*/2)\
-				 ? spec_regs_C.fcc			\
+				 ? spec_regs->regs_C.fcc			\
 				 : regs->regs_C.fcc)
 #define SET_FCC(EXPR)		(spec_mode				\
-				 ? ((spec_regs_C.fcc = (EXPR)),		\
+				 ? ((spec_regs->regs_C.fcc = (EXPR)),		\
 				    BITMAP_SET(use_spec_C,C_BMAP_SZ,/*fcc*/1),\
-				    spec_regs_C.fcc)			\
+				    spec_regs->regs_C.fcc)			\
 				 : (regs->regs_C.fcc = (EXPR)))
 
 #else
@@ -3622,6 +3617,7 @@ simoo_reg_obj(struct regs_t *xregs,		/* registers to access */
 	      struct eval_value_t *val)		/* input, output */
 {
   struct regs_t *regs = &contexts[0].regs;
+  struct regs_t *spec_regs = &contexts[0].spec_regs;
 
  switch (rt)
     {
@@ -3750,6 +3746,7 @@ ruu_dispatch(void)
   md_addr_t target_PC;			/* actual next/target PC address */
   md_addr_t addr;			/* effective address, if load/store */
   struct regs_t *regs;			/* context-specific register file */
+  struct regs_t *spec_regs;		/* context-specific speculative register file */
   struct RUU_station *rs;		/* RUU station being allocated */
   struct RUU_station *lsq;		/* LSQ station for ld/st's */
   struct bpred_update_t *dir_update_ptr;/* branch predictor dir update ptr */
@@ -3771,6 +3768,7 @@ ruu_dispatch(void)
   n_dispatched = 0;
 
   regs = &contexts[0].regs;
+  spec_regs = &contexts[0].spec_regs;
 
   while (/* instruction decode B/W left? */
 	 n_dispatched < (ruu_decode_width * fetch_speed)
@@ -3817,9 +3815,9 @@ ruu_dispatch(void)
 	}
 
       /* maintain $r0 semantics (in spec and non-spec space) */
-      regs->regs_R[MD_REG_ZERO] = 0; spec_regs_R[MD_REG_ZERO] = 0;
+      regs->regs_R[MD_REG_ZERO] = 0; spec_regs->regs_R[MD_REG_ZERO] = 0;
 #ifdef TARGET_ALPHA
-      regs->regs_F.d[MD_REG_ZERO] = 0.0; spec_regs_F.d[MD_REG_ZERO] = 0.0;
+      regs->regs_F.d[MD_REG_ZERO] = 0.0; spec_regs->regs_F.d[MD_REG_ZERO] = 0.0;
 #endif /* TARGET_ALPHA */
 
       if (!spec_mode)
@@ -4485,6 +4483,7 @@ void
 sim_main(void)
 {
   struct regs_t *regs = &contexts[0].regs;
+  struct regs_t *spec_regs = &contexts[0].spec_regs;
 
   /* ignore any floating point exceptions, they may occur on mis-speculated
      execution paths */
