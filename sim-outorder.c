@@ -2778,6 +2778,9 @@ ruu_issue(void)
   int i, load_lat, tlb_lat, n_issued;
   struct RS_link *node, *next_node;
   struct res_template *fu;
+  static int fgmt_issue_context_id = 0;
+
+  fgmt_issue_context_id = (fgmt_issue_context_id + 1) % NUM_CONTEXTS;
 
   /* FIXME: could be a little more efficient when scanning the ready queue */
 
@@ -2813,7 +2816,15 @@ ruu_issue(void)
 	  /* node is now un-queued */
 	  rs->queued = FALSE;
 
-	  if (rs->in_LSQ
+          /* printf("watching %d, fgmt is %d\n", rs->context_id, fgmt_issue_context_id); */
+          if (0 && rs->context_id != fgmt_issue_context_id)
+            {
+              /* FGMT: if this rs is not from the context that is
+                 selected at this cycle by FGMT, abort issue and
+                 enqueue this again */
+              readyq_enqueue(rs);
+            }
+	  else if (rs->in_LSQ
 	      && ((MD_OP_FLAGS(rs->op) & (F_MEM|F_STORE)) == (F_MEM|F_STORE)))
 	    {
 	      /* stores complete in effectively zero time, result is
@@ -4502,6 +4513,7 @@ ruu_fetch(void)
   /* ctx_id = selected[0] = selected[1] = 2; */
 
   ctx_id = selected[0];
+  /* selected[1] = selected[0]; */
 
   /* update the index of which context to be fetched next FIXME */
   pivot = (pivot + 1) % NUM_CONTEXTS;
