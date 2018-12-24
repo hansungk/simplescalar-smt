@@ -80,7 +80,19 @@
  * pipeline operations.
  */
 
-#define NUM_CONTEXTS 4
+#define MAX_CONTEXTS 16
+
+/* number of architectural states (contexts) supported by this processor */
+static int num_contexts;
+
+/* use ICOUNT fetching policy */
+static int icount_enabled;
+
+/* enable FGMT multithreading  */
+static int fgmt_enabled;
+
+/* dynamically partition fetch BW (used for 2.8 fetching) */
+static int dynamic_fetch_bw;
 
 /*
  * the create vector maps a logical register to a creator in the RUU (and
@@ -152,7 +164,7 @@ static struct context_t {
      instruction queue that belong to this context.  Used for ICOUNT
      fetch policy for SMT. */
   int icount;
-} contexts[NUM_CONTEXTS];
+} contexts[MAX_CONTEXTS];
 
 /* simulated registers */
 /* static struct regs_t regs; */
@@ -686,6 +698,21 @@ sim_reg_options(struct opt_odb_t *odb)
 	      "generate pipetrace, i.e., <fname|stdout|stderr> <range>",
 	      ptrace_opts, /* arr_sz */2, &ptrace_nelt, /* default */NULL,
 	      /* !print */FALSE, /* format */NULL, /* !accrue */FALSE);
+
+  /* SMT options */
+
+  opt_reg_int(odb, "-smt:threads", "number of threads (contexts) supported",
+	      &num_contexts, /* default */4,
+	      /* print */TRUE, /* format */NULL);
+  opt_reg_int(odb, "-smt:icount", "enable ICOUNT fetching policy",
+	      &icount_enabled, /* default */1,
+	      /* print */TRUE, /* format */NULL);
+  opt_reg_flag(odb, "-smt:fgmt", "replace SMT with FGMT multithreading",
+	      &fgmt_enabled, /* default */FALSE,
+	      /* print */TRUE, /* format */NULL);
+  opt_reg_int(odb, "-smt:dynamic_fetch_bw", "dynamically partition fetch BW (for 2.8 fetching) */",
+	      &dynamic_fetch_bw, /* default */1,
+	      /* print */TRUE, /* format */NULL);
 
   opt_reg_note(odb,
 "  Pipetrace range arguments are formatted as follows:\n"
@@ -1474,7 +1501,7 @@ sim_init(void)
 
   /* allocate and initialize register file */
   // regs_init(&regs);
-  for (i = 0; i < NUM_CONTEXTS; i++)
+  for (i = 0; i < num_contexts; i++)
     {
       regs_init(&contexts[i].regs);
       contexts[i].regs.context_id = i;
@@ -1483,7 +1510,7 @@ sim_init(void)
   /* allocate and initialize memory space */
   // mem = mem_create("mem");
   // mem_init(mem);
-  for (i = 0; i < NUM_CONTEXTS; i++)
+  for (i = 0; i < num_contexts; i++)
     {
       contexts[i].mem = mem_create("mem");
       mem_init(contexts[i].mem);
@@ -1527,7 +1554,7 @@ sim_load_prog(char *fname,		/* program to load */
 
   /* load program text and data, set up environment, memory, and regs */
   // ld_load_prog(fname, argc, argv, envp, &regs, mem, TRUE);
-  for (i = 0; i < NUM_CONTEXTS; i++)
+  for (i = 0; i < num_contexts; i++)
     {
       struct context_t *ctx = &contexts[i];
       ld_load_prog(fname, argc, argv, envp, &ctx->regs, ctx->mem, TRUE);
@@ -1673,7 +1700,7 @@ ruu_init(void)
   RUU_fcount = 0;
 #endif
   int i;
-  for (i = 0; i < NUM_CONTEXTS; i++)
+  for (i = 0; i < num_contexts; i++)
     {
       struct context_t *ctx = &contexts[i];
       ctx->RUU = calloc(RUU_size, sizeof(struct RUU_station));
@@ -1809,7 +1836,7 @@ lsq_init(void)
   LSQ_fcount = 0;
 #endif
   int i;
-  for (i = 0; i < NUM_CONTEXTS; i++)
+  for (i = 0; i < num_contexts; i++)
     {
       struct context_t *ctx = &contexts[i];
       ctx->LSQ = calloc(LSQ_size, sizeof(struct RUU_station));
@@ -2230,7 +2257,7 @@ cv_init(void)
 {
   int i, t;
 
-  for (t = 0; t < NUM_CONTEXTS; t++)
+  for (t = 0; t < num_contexts; t++)
     {
       struct context_t *ctx = &contexts[t];
 
@@ -2780,7 +2807,7 @@ ruu_issue(void)
   struct res_template *fu;
   static int fgmt_issue_context_id = 0;
 
-  fgmt_issue_context_id = (fgmt_issue_context_id + 1) % NUM_CONTEXTS;
+  fgmt_issue_context_id = (fgmt_issue_context_id + 1) % num_contexts;
 
   /* FIXME: could be a little more efficient when scanning the ready queue */
 
@@ -2817,7 +2844,7 @@ ruu_issue(void)
 	  rs->queued = FALSE;
 
           /* printf("watching %d, fgmt is %d\n", rs->context_id, fgmt_issue_context_id); */
-          if (0 && rs->context_id != fgmt_issue_context_id)
+          if (fgmt_enabled && rs->context_id != fgmt_issue_context_id)
             {
               /* FGMT: if this rs is not from the context that is
                  selected at this cycle by FGMT, abort issue and
@@ -3197,7 +3224,7 @@ tracer_init(void)
 {
   int i;
 
-  for (i = 0; i < NUM_CONTEXTS; i++)
+  for (i = 0; i < num_contexts; i++)
     {
       struct context_t *ctx = &contexts[i];
 
@@ -3912,7 +3939,7 @@ ruu_dispatch(void)
   int is_write;				/* store? */
   int made_check;			/* used to ensure DLite entry */
   int br_taken, br_pred_taken;		/* if br, taken?  predicted taken? */
-  int fetch_redirected[NUM_CONTEXTS] = {FALSE}; /* FIXME local, so maybe not needed to be array, but for safety */
+  int fetch_redirected[MAX_CONTEXTS] = {FALSE}; /* FIXME local, so maybe not needed to be array, but for safety */
   byte_t temp_byte = 0;			/* temp variable for spec mem access */
   half_t temp_half = 0;			/* " ditto " */
   word_t temp_word = 0;			/* " ditto " */
@@ -3922,7 +3949,7 @@ ruu_dispatch(void)
   enum md_fault_type fault;
   struct context_t *ctx;
   static int ctx_id = 0;
-  int chance = NUM_CONTEXTS;
+  int chance = num_contexts;
 
   made_check = FALSE;
   n_dispatched = 0;
@@ -3946,7 +3973,7 @@ ruu_dispatch(void)
             /* insts still available from fetch unit? */
             && ctx->fetch_num != 0))
         {
-          ctx_id = (ctx_id + 1) % NUM_CONTEXTS;
+          ctx_id = (ctx_id + 1) % num_contexts;
           ctx = &contexts[ctx_id];
           regs = &ctx->regs;
           spec_regs = &ctx->spec_regs;
@@ -4368,7 +4395,7 @@ ruu_dispatch(void)
              sim_cycle, ctx_id,
              ctx->RUU_num, ctx->LSQ_num, ctx->fetch_num, (ruu_include_spec || !ctx->spec_mode));
       printf("fetch_num=");
-      for (i = 0; i < NUM_CONTEXTS; i++)
+      for (i = 0; i < num_contexts; i++)
         {
           printf("%d ", contexts[i].fetch_num);
         }
@@ -4387,7 +4414,7 @@ ruu_dispatch(void)
 
   /* Round-robin dispatch: SMT-FIXME */
   /* SMT-TODO: find a thread that can be dispatched from */
-  ctx_id = (ctx_id + 1) % NUM_CONTEXTS;
+  ctx_id = (ctx_id + 1) % num_contexts;
 }
 
 
@@ -4400,7 +4427,7 @@ static void
 fetch_init(void)
 {
   int i;
-  for (i = 0; i < NUM_CONTEXTS; i++)
+  for (i = 0; i < num_contexts; i++)
     {
       struct context_t *ctx = &contexts[i];
 
@@ -4465,12 +4492,12 @@ icount_select(int *selected)
   int c1 = 0, c2 = 0;
   int i;
 
-  for (i = 0; i < NUM_CONTEXTS; i++)
+  for (i = 0; i < num_contexts; i++)
     {
       if (contexts[i].icount < contexts[c1].icount)
         c1 = i;
     }
-  for (i = 0; i < NUM_CONTEXTS; i++)
+  for (i = 0; i < num_contexts; i++)
     {
       if (i != c1 &&
           contexts[i].icount < contexts[c2].icount &&
@@ -4489,47 +4516,68 @@ static int last_inst_tmissed = FALSE;
 static void
 ruu_fetch(void)
 {
-  int i, lat, tlb_lat, done = FALSE;
+  int i, lat, tlb_lat, done[MAX_CONTEXTS] = {FALSE};
   md_inst_t inst;
   int stack_recover_idx;
-  int branch_cnt;
+  int branch_cnt[MAX_CONTEXTS] = {0};
   static int pivot = 0;
   int ctx_id;
   enum md_opcode op;
   int selected[2];
 
   /* SMT: RR1.8 */
-  selected[0] = pivot;
-  selected[1] = pivot;
+  /* selected[0] = selected[1] = pivot; */
+
+  /* SMT: random 1.8 */
+  selected[0] = selected[1] = (myrand() % num_contexts);
 
   /* SMT: RR2.4 */
-  /* selected[1] = (pivot + NUM_CONTEXTS / 2) % NUM_CONTEXTS; */
+  /* selected[1] = (pivot + num_contexts / 2) % num_contexts; */
 
   /* SMT: share fetch bandwidth: fetch from one thread in the first half, and
      from another in the second half */
-  icount_select(selected);
+  if (icount_enabled)
+    icount_select(selected);
 
-  /* Let's test if only fetching from the wrong thread still make things work. */
+  /* SMT: fixed thread */
   /* ctx_id = selected[0] = selected[1] = 2; */
 
-  ctx_id = selected[0];
   /* selected[1] = selected[0]; */
+  ctx_id = selected[0];
 
   /* update the index of which context to be fetched next FIXME */
-  pivot = (pivot + 1) % NUM_CONTEXTS;
+  pivot = (pivot + 1) % num_contexts;
 
-  for (i=0, branch_cnt=0;
+  for (i=0, branch_cnt[ctx_id]=0;
        /* fetch up to as many instruction as the DISPATCH stage can decode */
-       i < (ruu_decode_width * fetch_speed)
+       i < (ruu_decode_width * fetch_speed);
+#if 0
        /* fetch until IFETCH -> DISPATCH queue fills */
        && contexts[ctx_id].fetch_num < ruu_ifq_size
        /* and no IFETCH blocking condition encountered */
-       && !done;
+       && !done[ctx_id];
+#endif
        i++)
     {
-      /* make gaps between the start time of each thread to prevent
-         severe cache contention. */
-      if (sim_cycle < ctx_id * 10000 || contexts[ctx_id].ruu_fetch_issue_delay > 0)
+      int j;
+
+      /* SMT: 2.8 fetching: fetch as much as we can from the first
+         thread, and then fetch the rest from the second thread. */
+      if (/* encountered a branch? */
+          branch_cnt[ctx_id] > 0
+          /* 2.4 fetching: depleted BW quota? */
+          || (!dynamic_fetch_bw
+              && ctx_id == selected[0]
+              && i >= (ruu_decode_width * fetch_speed) / 2)
+          /* I-cache blocked? */
+          || contexts[ctx_id].ruu_fetch_issue_delay > 0
+          /* IFQ queue filled? */
+          || contexts[ctx_id].fetch_num >= ruu_ifq_size
+          /* done flag set? */
+          || done[ctx_id]
+          /* make gaps between the start time of each thread to
+             prevent severe cache contention. SMT-FIXME needed? */
+          || sim_cycle < ctx_id * 0)
         {
           /* already switched to the second thread? abort */
           if (ctx_id == selected[1])
@@ -4538,26 +4586,35 @@ ruu_fetch(void)
               break;
             }
           /* if not, try again with the second thread */
-          /* printf("trying another thread\n"); */
+          printf("trying another thread: %d->%d\n", ctx_id, selected[1]);
           ctx_id = selected[1];
-          /* maintain BW usage */
-          i--;
+          if (dynamic_fetch_bw)
+            {
+              /* didn't fetch anything, keep BW usage from incrementing */
+              i--;
+            }
+          else
+            {
+              /* fixed partitioning: used up BW quota
+                 (-1 is for compensating i++ in the for loop) */
+              i = (ruu_decode_width * fetch_speed) / 2 - 1;
+            }
           continue;
         }
 
       printf("fetch_issue_delay: ");
-      for (i = 0; i < NUM_CONTEXTS; i++)
+      for (j = 0; j < num_contexts; j++)
         {
-          printf("%d ", contexts[i].ruu_fetch_issue_delay);
+          printf("%d ", contexts[j].ruu_fetch_issue_delay);
         }
       printf("\n");
 
       printf("[%ld] from icounts=", sim_cycle);
-      for (i = 0; i < NUM_CONTEXTS; i++)
+      for (j = 0; j < num_contexts; j++)
         {
-          printf("%d ", contexts[i].icount);
+          printf("%d ", contexts[j].icount);
         }
-      printf(", fetching from %d\n", ctx_id);
+      printf(", fetching i=%dth from %d\n", i, ctx_id);
 
       /* printf("fetching from %d\n", ctx_id); */
       /* points to the current thread context being fetched */
@@ -4580,6 +4637,7 @@ ruu_fetch(void)
 	  if (cache_il1)
 	    {
 	      /* access the I-cache */
+              /* SMT-FIXME 0!! */
 	      lat =
 		cache_access(cache_il1, Read, 0, IACOMPRESS(ctx->fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
@@ -4592,6 +4650,7 @@ ruu_fetch(void)
 	    {
 	      /* access the I-TLB, NOTE: this code will initiate
 		 speculative TLB misses */
+              /* SMT-FIXME 0!! */
 	      tlb_lat =
 		cache_access(itlb, Read, 0, IACOMPRESS(ctx->fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
@@ -4652,9 +4711,9 @@ ruu_fetch(void)
 	  else
 	    {
 	      /* go with target, NOTE: discontinuous fetch, so terminate */
-	      branch_cnt++;
-	      if (branch_cnt >= fetch_speed)
-		done = TRUE;
+	      branch_cnt[ctx_id]++;
+	      if (branch_cnt[ctx_id] >= fetch_speed)
+		done[ctx_id] = TRUE;
 	    }
 	}
       else
@@ -4690,12 +4749,6 @@ ruu_fetch(void)
       ctx->fetch_num++;
       ctx->icount++;
       printf("successfully fetched from context %d\n", ctx_id);
-
-      if (i >= (ruu_decode_width * fetch_speed) / 2)
-        {
-          ctx_id = selected[1];
-        }
-
     }
 }
 
@@ -4791,7 +4844,7 @@ sim_main(void)
      execution paths */
   signal(SIGFPE, SIG_IGN);
 
-  for (i = 0; i < NUM_CONTEXTS; i++)
+  for (i = 0; i < num_contexts; i++)
     {
       struct context_t *ctx = &contexts[i];
       struct regs_t *regs = &ctx->regs;
@@ -4897,7 +4950,7 @@ sim_main(void)
   fprintf(stderr, "sim: ** starting performance simulation **\n");
 
   /* set up timing simulation entry state */
-  for (i = 0; i < NUM_CONTEXTS; i++)
+  for (i = 0; i < num_contexts; i++)
     {
       struct context_t *ctx = &contexts[i];
       ctx->fetch_regs_PC = ctx->regs.regs_PC - sizeof(md_inst_t);
@@ -4911,7 +4964,7 @@ sim_main(void)
     {
       /* RUU/LSQ sanity checks, for each thread */
       int i;
-      for (i = 0; i < NUM_CONTEXTS; i++)
+      for (i = 0; i < num_contexts; i++)
         {
           struct context_t *ctx = &contexts[i];
           struct regs_t *regs = &ctx->regs;
@@ -4931,7 +4984,7 @@ sim_main(void)
       ptrace_newcycle(sim_cycle);
 
       /* commit entries from RUU/LSQ to architected register file */
-      for (i = 0; i < NUM_CONTEXTS; i++)
+      for (i = 0; i < num_contexts; i++)
         {
           ruu_commit(i);
         }
@@ -4949,7 +5002,7 @@ sim_main(void)
 	{
 	  /* try to locate memory operations that are ready to execute */
 	  /* ==> inserts operations into ready queue --> mem deps resolved */
-          for (i = 0; i < NUM_CONTEXTS; i++)
+          for (i = 0; i < num_contexts; i++)
             {
               /* for all threads */
               lsq_refresh(i);
@@ -4968,7 +5021,7 @@ sim_main(void)
 	{
 	  /* try to locate memory operations that are ready to execute */
 	  /* ==> inserts operations into ready queue --> mem deps resolved */
-          for (i = 0; i < NUM_CONTEXTS; i++)
+          for (i = 0; i < num_contexts; i++)
             {
               /* for all threads */
               lsq_refresh(i);
@@ -4985,7 +5038,7 @@ sim_main(void)
 
       /* decrement per-thread ruu_fetch_issue_delay */
       /* printf("decrementing from "); */
-      for (i = 0; i < NUM_CONTEXTS; i++)
+      for (i = 0; i < num_contexts; i++)
         {
           /* printf("%d ", contexts[i].ruu_fetch_issue_delay); */
           if (contexts[i].ruu_fetch_issue_delay > 0)

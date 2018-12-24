@@ -626,8 +626,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
   /* update block tags */
   repl->tag = tag;
   printf("addr %ld: updated repl from context %d to %d\n", CACHE_BADDR(cp, addr), repl->context_idx, context_idx);
-  /* printf("was repl ready? %d\n", repl->ready - now); */
-  /* repl->context_idx = context_idx; */
+  repl->context_idx = context_idx;
   repl->status = CACHE_BLK_VALID;	/* dirty bit set on update */
 
   /* read data block */
