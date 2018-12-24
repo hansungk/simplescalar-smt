@@ -266,6 +266,7 @@ cache_create(char *name,		/* name of the cache */
 	     enum cache_policy policy,	/* replacement policy w/in sets */
 	     /* block access function, see description w/in struct cache def */
 	     unsigned int (*blk_access_fn)(enum mem_cmd cmd,
+                                           int context_idx,
 					   md_addr_t baddr, int bsize,
 					   struct cache_blk_t *blk,
 					   tick_t now),
@@ -498,6 +499,7 @@ cache_stats(struct cache_t *cp,		/* cache instance */
 unsigned int				/* latency of access in cycles */
 cache_access(struct cache_t *cp,	/* cache to access */
 	     enum mem_cmd cmd,		/* access type, Read or Write */
+             int context_idx,		/* context of this address */
 	     md_addr_t addr,		/* address of access */
 	     void *vp,			/* ptr to buffer for input/output */
 	     int nbytes,		/* number of bytes to access */
@@ -529,7 +531,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
   /* permissions are checked on cache misses */
 
   /* check for a fast hit: access to same block */
-  if (IS_CACHE_FAST_HIT(cp, addr) && (cp->last_blk != NULL))
+  if (IS_CACHE_FAST_HIT(cp, addr) && (cp->last_blk != NULL) && cp->last_blk->context_idx == context_idx)
     {
       /* hit in the same block */
       blk = cp->last_blk;
@@ -545,7 +547,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
 	   blk;
 	   blk=blk->hash_next)
 	{
-	  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
+	  if (blk->tag == tag && blk->context_idx == context_idx && (blk->status & CACHE_BLK_VALID))
 	    goto cache_hit;
 	}
     }
@@ -556,7 +558,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
 	   blk;
 	   blk=blk->way_next)
 	{
-	  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
+	  if (blk->tag == tag && blk->context_idx == context_idx && (blk->status & CACHE_BLK_VALID))
 	    goto cache_hit;
 	}
     }
@@ -615,16 +617,17 @@ cache_access(struct cache_t *cp,	/* cache to access */
 	  cp->writebacks++;
 	  lat += cp->blk_access_fn(Write,
 				   CACHE_MK_BADDR(cp, repl->tag, set),
-				   cp->bsize, repl, now+lat);
+				   cp->bsize, repl, now+lat, context_idx);
 	}
     }
 
   /* update block tags */
   repl->tag = tag;
+  repl->context_idx = context_idx;
   repl->status = CACHE_BLK_VALID;	/* dirty bit set on update */
 
   /* read data block */
-  lat += cp->blk_access_fn(Read, CACHE_BADDR(cp, addr), cp->bsize,
+  lat += cp->blk_access_fn(Read, context_idx, CACHE_BADDR(cp, addr), cp->bsize,
 			   repl, now+lat);
 
   /* copy data out of cache block */
@@ -788,7 +791,8 @@ cache_flush(struct cache_t *cp,		/* cache instance to flush */
           	  cp->writebacks++;
 		  lat += cp->blk_access_fn(Write,
 					   CACHE_MK_BADDR(cp, blk->tag, i),
-					   cp->bsize, blk, now+lat);
+					   cp->bsize, blk, now+lat,
+                                           blk->context_idx);
 		}
 	    }
 	}
@@ -849,6 +853,7 @@ cache_flush_addr(struct cache_t *cp,	/* cache instance to flush */
 	  /* write back the invalidated block */
           cp->writebacks++;
 	  lat += cp->blk_access_fn(Write,
+                                   blk->context_idx,
 				   CACHE_MK_BADDR(cp, blk->tag, set),
 				   cp->bsize, blk, now+lat);
 	}

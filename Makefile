@@ -276,12 +276,12 @@ CFLAGS = $(MFLAGS) $(FFLAGS) $(OFLAGS) $(BINUTILS_INC) $(BINUTILS_LIB)
 #
 # all the sources
 #
-SRCS =	main.c sim-fast.c sim-safe.c sim-cache.c sim-profile.c \
+SRCS =	main.c sim-fast.c sim-safe.c sim-profile.c \
 	sim-eio.c sim-bpred.c sim-cheetah.c sim-outorder.c \
 	memory.c regs.c cache.c bpred.c ptrace.c eventq.c \
 	resource.c endian.c dlite.c symbol.c eval.c options.c range.c \
 	eio.c stats.c endian.c misc.c \
-	mase-checker.c mase-commit.c mase-debug.c mase-exec.c mase-fe.c mase.c mase-mem.c mase-opts.c \
+	mase-checker.c mase-commit.c mase-debug.c mase-exec.c mase-fe.c mase.c mase-opts.c \
 	target-pisa/pisa.c target-pisa/loader.c target-pisa/syscall.cpp \
 	target-pisa/symbol.c \
 	target-alpha/alpha.c target-alpha/loader.c target-alpha/syscall.cpp \
@@ -310,8 +310,7 @@ MASE_OBJS = mase-checker.$(OEXT) mase-commit.$(OEXT) mase-debug.$(OEXT) mase-exe
 #
 PROGS = sim-fast$(EEXT) sim-safe$(EEXT) sim-eio$(EEXT) \
 	sim-bpred$(EEXT) sim-profile$(EEXT) \
-	sim-cheetah$(EEXT) sim-cache$(EEXT) sim-outorder$(EEXT) \
-	sim-mase$(EXT)
+	sim-cheetah$(EEXT) sim-outorder$(EEXT)
 
 #
 # all targets, NOTE: library ordering is important...

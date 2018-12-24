@@ -80,7 +80,7 @@
  * pipeline operations.
  */
 
-#define NUM_CONTEXTS 8
+#define NUM_CONTEXTS 4
 
 /*
  * the create vector maps a logical register to a creator in the RUU (and
@@ -509,6 +509,7 @@ mem_access_latency(int blk_sz)		/* block size accessed */
 /* l1 data cache l1 block miss handler function */
 static unsigned int			/* latency of block access */
 dl1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
+              int context_idx,
 	      md_addr_t baddr,		/* block address to access */
 	      int bsize,		/* size of block to access */
 	      struct cache_blk_t *blk,	/* ptr to block in upper level */
@@ -519,7 +520,7 @@ dl1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
   if (cache_dl2)
     {
       /* access next level of data cache hierarchy */
-      lat = cache_access(cache_dl2, cmd, baddr, NULL, bsize,
+      lat = cache_access(cache_dl2, cmd, context_idx, baddr, NULL, bsize,
 			 /* now */now, /* pudata */NULL, /* repl addr */NULL);
       if (cmd == Read)
 	return lat;
@@ -545,6 +546,7 @@ dl1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 /* l2 data cache block miss handler function */
 static unsigned int			/* latency of block access */
 dl2_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
+              int context_idx,
 	      md_addr_t baddr,		/* block address to access */
 	      int bsize,		/* size of block to access */
 	      struct cache_blk_t *blk,	/* ptr to block in upper level */
@@ -563,6 +565,7 @@ dl2_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 /* l1 inst cache l1 block miss handler function */
 static unsigned int			/* latency of block access */
 il1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
+              int context_idx,
 	      md_addr_t baddr,		/* block address to access */
 	      int bsize,		/* size of block to access */
 	      struct cache_blk_t *blk,	/* ptr to block in upper level */
@@ -573,7 +576,7 @@ il1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 if (cache_il2)
     {
       /* access next level of inst cache hierarchy */
-      lat = cache_access(cache_il2, cmd, baddr, NULL, bsize,
+      lat = cache_access(cache_il2, cmd, context_idx, baddr, NULL, bsize,
 			 /* now */now, /* pudata */NULL, /* repl addr */NULL);
       if (cmd == Read)
 	return lat;
@@ -593,6 +596,7 @@ if (cache_il2)
 /* l2 inst cache block miss handler function */
 static unsigned int			/* latency of block access */
 il2_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
+              int context_idx,
 	      md_addr_t baddr,		/* block address to access */
 	      int bsize,		/* size of block to access */
 	      struct cache_blk_t *blk,	/* ptr to block in upper level */
@@ -613,6 +617,7 @@ il2_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 /* inst cache block miss handler function */
 static unsigned int			/* latency of block access */
 itlb_access_fn(enum mem_cmd cmd,	/* access cmd, Read or Write */
+               int context_idx,
 	       md_addr_t baddr,		/* block address to access */
 	       int bsize,		/* size of block to access */
 	       struct cache_blk_t *blk,	/* ptr to block in upper level */
@@ -633,6 +638,7 @@ itlb_access_fn(enum mem_cmd cmd,	/* access cmd, Read or Write */
 /* data cache block miss handler function */
 static unsigned int			/* latency of block access */
 dtlb_access_fn(enum mem_cmd cmd,	/* access cmd, Read or Write */
+               int context_idx,
 	       md_addr_t baddr,	/* block address to access */
 	       int bsize,		/* size of block to access */
 	       struct cache_blk_t *blk,	/* ptr to block in upper level */
@@ -2333,7 +2339,7 @@ ruu_commit(int ctx_id)
 		    {
 		      /* commit store value to D-cache */
 		      lat =
-			cache_access(cache_dl1, Write, (ctx->LSQ[ctx->LSQ_head].addr&~3),
+			cache_access(cache_dl1, Write, ctx_id, (ctx->LSQ[ctx->LSQ_head].addr&~3),
 				     NULL, 4, sim_cycle, NULL, NULL);
 		      if (lat > cache_dl1_lat)
 			events |= PEV_CACHEMISS;
@@ -2344,7 +2350,7 @@ ruu_commit(int ctx_id)
 		    {
 		      /* access the D-TLB */
 		      lat =
-			cache_access(dtlb, Read, (ctx->LSQ[ctx->LSQ_head].addr & ~3),
+			cache_access(dtlb, Read, ctx_id, (ctx->LSQ[ctx->LSQ_head].addr & ~3),
 				     NULL, 4, sim_cycle, NULL, NULL);
 		      if (lat > 1)
 			events |= PEV_TLBMISS;
@@ -2890,6 +2896,7 @@ ruu_issue(void)
 				  /* access the cache if non-faulting */
 				  load_lat =
 				    cache_access(cache_dl1, Read,
+                                                 rs->context_id,
 						 (rs->addr & ~3), NULL, 4,
 						 sim_cycle, NULL, NULL);
 				  if (load_lat > cache_dl1_lat)
@@ -2908,7 +2915,7 @@ ruu_issue(void)
 			      /* access the D-DLB, NOTE: this code will
 				 initiate speculative TLB misses */
 			      tlb_lat =
-				cache_access(dtlb, Read, (rs->addr & ~3),
+				cache_access(dtlb, Read, rs->context_id, (rs->addr & ~3),
 					     NULL, 4, sim_cycle, NULL, NULL);
 			      if (tlb_lat > 1)
 				events |= PEV_TLBMISS;
@@ -3000,6 +3007,8 @@ ruu_issue(void)
          queue is always properly sorted */
       RSLINK_FREE(node);
     }
+
+  /* printf("n_issued=%d\n", n_issued); */
 }
 
 
@@ -3910,9 +3919,6 @@ ruu_dispatch(void)
 
   /* printf("dispatching context %d\n", ctx_id); */
 
-  /* if (ctx_id != 0) */
-  /*   return; */
-
   while (/* instruction decode B/W left? */
 	 n_dispatched < (ruu_decode_width * fetch_speed)
 	 /* RUU and LSQ not full? */
@@ -4408,6 +4414,30 @@ fetch_dump(FILE *stream)			/* output stream */
     }
 }
 
+/* SMT ICOUNT fetch selection policy: find and store into 'selected'
+   the two context IDs that has minimum ICOUNT values among others. */
+static void
+icount_select(int *selected)
+{
+  int c1 = 0, c2 = 0;
+  int i;
+
+  for (i = 0; i < NUM_CONTEXTS; i++)
+    {
+      if (contexts[i].icount < contexts[c1].icount)
+        c1 = i;
+    }
+  for (i = 0; i < NUM_CONTEXTS; i++)
+    {
+      if (i != c1 &&
+          contexts[i].icount < contexts[c2].icount &&
+          contexts[i].icount >= contexts[c1].icount)
+        c2 = i;
+    }
+  selected[0] = c1;
+  selected[1] = c2;
+}
+
 static int last_inst_missed = FALSE;
 static int last_inst_tmissed = FALSE;
 
@@ -4423,8 +4453,20 @@ ruu_fetch(void)
   static int pivot = 0;
   int ctx_id;
   enum md_opcode op;
+  int selected[2];
 
-  ctx_id = pivot;
+  /* SMT: RR2.4 */
+  /* selected[0] = pivot; */
+  /* selected[1] = (pivot + NUM_CONTEXTS / 2) % NUM_CONTEXTS; */
+  /* selected[1] = pivot; */
+
+  /* SMT: share fetch bandwidth: fetch from one thread in the first half, and
+     from another in the second half */
+  icount_select(selected);
+
+  ctx_id = selected[0];
+  /* Let's test if only fetching from the wrong thread still make things work. */
+  /* ctx_id = 2; */
 
   for (i=0, branch_cnt=0;
        /* fetch up to as many instruction as the DISPATCH stage can decode */
@@ -4435,6 +4477,7 @@ ruu_fetch(void)
        && !done;
        i++)
     {
+      /* printf("fetching from %d\n", ctx_id); */
       /* points to the current thread context being fetched */
       struct context_t *ctx = &contexts[ctx_id];
       struct mem_t *mem = ctx->mem;
@@ -4456,7 +4499,7 @@ ruu_fetch(void)
 	    {
 	      /* access the I-cache */
 	      lat =
-		cache_access(cache_il1, Read, IACOMPRESS(ctx->fetch_regs_PC),
+		cache_access(cache_il1, Read, ctx_id, IACOMPRESS(ctx->fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (lat > cache_il1_lat)
@@ -4468,7 +4511,7 @@ ruu_fetch(void)
 	      /* access the I-TLB, NOTE: this code will initiate
 		 speculative TLB misses */
 	      tlb_lat =
-		cache_access(itlb, Read, IACOMPRESS(ctx->fetch_regs_PC),
+		cache_access(itlb, Read, ctx_id, IACOMPRESS(ctx->fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (tlb_lat > 1)
@@ -4563,15 +4606,19 @@ ruu_fetch(void)
       ctx->fetch_tail = (ctx->fetch_tail + 1) & (ruu_ifq_size - 1);
       ctx->fetch_num++;
       ctx->icount++;
-      printf("ctx[%d]->icount=%d\n", ctx_id, ctx->icount);
 
-      /* SMT: share fetch bandwidth: fetch from one thread in the first half, and
-         from another in the second half */
-      ctx_id = pivot;
+      ctx_id = selected[0];
       if (i >= (ruu_decode_width * fetch_speed) / 2)
         {
-          ctx_id = (pivot + NUM_CONTEXTS / 2) % NUM_CONTEXTS;
+          ctx_id = selected[1];
         }
+
+      /* printf("from "); */
+      /* for (i = 0; i < NUM_CONTEXTS; i++) */
+      /*   { */
+      /*     printf("%d ", contexts[i].icount); */
+      /*   } */
+      /* printf(", fetching from %d\n", ctx_id); */
     }
 
   /* update the index of which context to be fetched next FIXME */

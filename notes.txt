@@ -14,14 +14,16 @@ SMT
 
 # Things to modify
 
+* Separate all the things (see context_t)
 * 1 register file -> an array of register files
+* Modify caches to read from a specified context_id each time
 
 # Things to note
 
 Instructions are executed at the switch stmt in ruu_dispatch().
 (execution before commit?)
 
-Separate RUUs (ROBs)?
+Separate RUUs?
 M-Sim implements separate RUUs.
 Shared RUUs complicate branch recovery logic.
 

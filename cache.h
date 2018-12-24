@@ -124,6 +124,10 @@ struct cache_blk_t
   /* since hash table lists are typically small, there is no previous
      pointer, deletion requires a trip through the hash table bucket list */
   md_addr_t tag;		/* data block tag value */
+  int context_idx;		/* the context the address of this
+                                   block belongs to.  This is needed
+                                   because the address space for mem
+                                   of each thread is not separated. */
   unsigned int status;		/* block status, see CACHE_BLK_* defs above */
   tick_t ready;		/* time when block will be accessible, field
 				   is set when a miss fetch is initiated */
@@ -172,6 +176,7 @@ struct cache_t
      of that operation */
   unsigned int					/* latency of block access */
     (*blk_access_fn)(enum mem_cmd cmd,		/* block access command */
+                     int context_idx,		/* context index */
 		     md_addr_t baddr,		/* program address to access */
 		     int bsize,			/* size of the cache block */
 		     struct cache_blk_t *blk,	/* ptr to cache block struct */
@@ -226,6 +231,7 @@ cache_create(char *name,		/* name of the cache */
 	     enum cache_policy policy,	/* replacement policy w/in sets */
 	     /* block access function, see description w/in struct cache def */
 	     unsigned int (*blk_access_fn)(enum mem_cmd cmd,
+                                           int context_idx,
 					   md_addr_t baddr, int bsize,
 					   struct cache_blk_t *blk,
 					   tick_t now),
@@ -261,6 +267,7 @@ void cache_stats(struct cache_t *cp, FILE *stream);
 unsigned int				/* latency of access in cycles */
 cache_access(struct cache_t *cp,	/* cache to access */
 	     enum mem_cmd cmd,		/* access type, Read or Write */
+             int context_idx,		/* context of this address */
 	     md_addr_t addr,		/* address of access */
 	     void *vp,			/* ptr to buffer for input/output */
 	     int nbytes,		/* number of bytes to access */
