@@ -531,7 +531,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
   /* permissions are checked on cache misses */
 
   /* check for a fast hit: access to same block */
-  if (IS_CACHE_FAST_HIT(cp, addr) && (cp->last_blk != NULL) && cp->last_blk->context_idx == context_idx)
+  if (IS_CACHE_FAST_HIT(cp, addr) && (cp->last_blk != NULL) && (cp->last_blk->context_idx == context_idx))
     {
       /* hit in the same block */
       blk = cp->last_blk;
@@ -547,7 +547,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
 	   blk;
 	   blk=blk->hash_next)
 	{
-	  if (blk->tag == tag && blk->context_idx == context_idx && (blk->status & CACHE_BLK_VALID))
+          if (blk->tag == tag && (blk->context_idx == context_idx) && (blk->status & CACHE_BLK_VALID))
 	    goto cache_hit;
 	}
     }
@@ -558,7 +558,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
 	   blk;
 	   blk=blk->way_next)
 	{
-	  if (blk->tag == tag && blk->context_idx == context_idx && (blk->status & CACHE_BLK_VALID))
+          if (blk->tag == tag && (blk->context_idx == context_idx) && (blk->status & CACHE_BLK_VALID))
 	    goto cache_hit;
 	}
     }
@@ -566,6 +566,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
   /* cache block not found */
 
   /* **MISS** */
+  printf("MISS in context %d, addr %ld\n", context_idx, CACHE_BADDR(cp, addr));
   cp->misses++;
 
   /* select the appropriate block to replace, and re-link this entry to
@@ -616,14 +617,17 @@ cache_access(struct cache_t *cp,	/* cache to access */
 	  /* write back the cache block */
 	  cp->writebacks++;
 	  lat += cp->blk_access_fn(Write,
+                                   context_idx,
 				   CACHE_MK_BADDR(cp, repl->tag, set),
-				   cp->bsize, repl, now+lat, context_idx);
+				   cp->bsize, repl, now+lat);
 	}
     }
 
   /* update block tags */
   repl->tag = tag;
-  repl->context_idx = context_idx;
+  printf("addr %ld: updated repl from context %d to %d\n", CACHE_BADDR(cp, addr), repl->context_idx, context_idx);
+  /* printf("was repl ready? %d\n", repl->ready - now); */
+  /* repl->context_idx = context_idx; */
   repl->status = CACHE_BLK_VALID;	/* dirty bit set on update */
 
   /* read data block */
@@ -688,7 +692,10 @@ cache_access(struct cache_t *cp,	/* cache to access */
     *udata = blk->user_data;
 
   /* return first cycle data is available to access */
-  return (int) MAX(cp->hit_latency, (blk->ready - now));
+  int ret = (int) MAX(cp->hit_latency, (blk->ready - now));
+  printf("HIT!!! lat=%d, hit_latency=%d\n", ret, cp->hit_latency);
+  return ret;
+  /* return (int) MAX(cp->hit_latency, (blk->ready - now)); */
 
  cache_fast_hit: /* fast hit handler */
   
@@ -790,9 +797,9 @@ cache_flush(struct cache_t *cp,		/* cache instance to flush */
 		  /* write back the invalidated block */
           	  cp->writebacks++;
 		  lat += cp->blk_access_fn(Write,
+                                           blk->context_idx,
 					   CACHE_MK_BADDR(cp, blk->tag, i),
-					   cp->bsize, blk, now+lat,
-                                           blk->context_idx);
+					   cp->bsize, blk, now+lat);
 		}
 	    }
 	}

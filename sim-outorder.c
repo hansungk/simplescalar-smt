@@ -4267,6 +4267,7 @@ ruu_dispatch(void)
       else
 	{
 	  /* this is a NOP, no need to update RUU/LSQ state */
+          ctx->icount--;
 	  rs = NULL;
 	}
 
@@ -4486,19 +4487,24 @@ ruu_fetch(void)
   enum md_opcode op;
   int selected[2];
 
-  /* SMT: RR2.4 */
+  /* SMT: RR1.8 */
   selected[0] = pivot;
-  selected[1] = (pivot + NUM_CONTEXTS / 2) % NUM_CONTEXTS;
   selected[1] = pivot;
+
+  /* SMT: RR2.4 */
+  /* selected[1] = (pivot + NUM_CONTEXTS / 2) % NUM_CONTEXTS; */
 
   /* SMT: share fetch bandwidth: fetch from one thread in the first half, and
      from another in the second half */
-  /* icount_select(selected); */
+  icount_select(selected);
 
   /* Let's test if only fetching from the wrong thread still make things work. */
   /* ctx_id = selected[0] = selected[1] = 2; */
 
   ctx_id = selected[0];
+
+  /* update the index of which context to be fetched next FIXME */
+  pivot = (pivot + 1) % NUM_CONTEXTS;
 
   for (i=0, branch_cnt=0;
        /* fetch up to as many instruction as the DISPATCH stage can decode */
@@ -4509,7 +4515,39 @@ ruu_fetch(void)
        && !done;
        i++)
     {
-      printf("fetching from %d\n", ctx_id);
+      /* make gaps between the start time of each thread to prevent
+         severe cache contention. */
+      if (sim_cycle < ctx_id * 10000 || contexts[ctx_id].ruu_fetch_issue_delay > 0)
+        {
+          /* already switched to the second thread? abort */
+          if (ctx_id == selected[1])
+            {
+              /* printf("all threads blocked\n"); */
+              break;
+            }
+          /* if not, try again with the second thread */
+          /* printf("trying another thread\n"); */
+          ctx_id = selected[1];
+          /* maintain BW usage */
+          i--;
+          continue;
+        }
+
+      printf("fetch_issue_delay: ");
+      for (i = 0; i < NUM_CONTEXTS; i++)
+        {
+          printf("%d ", contexts[i].ruu_fetch_issue_delay);
+        }
+      printf("\n");
+
+      printf("[%ld] from icounts=", sim_cycle);
+      for (i = 0; i < NUM_CONTEXTS; i++)
+        {
+          printf("%d ", contexts[i].icount);
+        }
+      printf(", fetching from %d\n", ctx_id);
+
+      /* printf("fetching from %d\n", ctx_id); */
       /* points to the current thread context being fetched */
       struct context_t *ctx = &contexts[ctx_id];
       struct mem_t *mem = ctx->mem;
@@ -4531,11 +4569,11 @@ ruu_fetch(void)
 	    {
 	      /* access the I-cache */
 	      lat =
-		cache_access(cache_il1, Read, ctx_id, IACOMPRESS(ctx->fetch_regs_PC),
+		cache_access(cache_il1, Read, 0, IACOMPRESS(ctx->fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (lat > cache_il1_lat)
-		last_inst_missed = TRUE;
+                  last_inst_missed = TRUE;
 	    }
 
 	  if (itlb)
@@ -4543,11 +4581,11 @@ ruu_fetch(void)
 	      /* access the I-TLB, NOTE: this code will initiate
 		 speculative TLB misses */
 	      tlb_lat =
-		cache_access(itlb, Read, ctx_id, IACOMPRESS(ctx->fetch_regs_PC),
+		cache_access(itlb, Read, 0, IACOMPRESS(ctx->fetch_regs_PC),
 			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (tlb_lat > 1)
-		last_inst_tmissed = TRUE;
+                  last_inst_tmissed = TRUE;
 
 	      /* I-cache/I-TLB accesses occur in parallel */
 	      lat = MAX(tlb_lat, lat);
@@ -4558,6 +4596,7 @@ ruu_fetch(void)
 	    {
 	      /* I-cache miss, block fetch until it is resolved */
 	      ctx->ruu_fetch_issue_delay += lat - 1;
+              printf("blocked!\n");
 	      break;
 	    }
 	  /* else, I-cache/I-TLB hit */
@@ -4638,23 +4677,14 @@ ruu_fetch(void)
       ctx->fetch_tail = (ctx->fetch_tail + 1) & (ruu_ifq_size - 1);
       ctx->fetch_num++;
       ctx->icount++;
+      printf("successfully fetched from context %d\n", ctx_id);
 
-      ctx_id = selected[0];
       if (i >= (ruu_decode_width * fetch_speed) / 2)
         {
           ctx_id = selected[1];
         }
 
-      printf("from ");
-      for (i = 0; i < NUM_CONTEXTS; i++)
-        {
-          printf("%d ", contexts[i].icount);
-        }
-      printf(", fetching from %d\n", ctx_id);
     }
-
-  /* update the index of which context to be fetched next FIXME */
-  pivot = (pivot + 1) % NUM_CONTEXTS;
 }
 
 /* default machine state accessor, used by DLite */
@@ -4938,10 +4968,18 @@ sim_main(void)
 	}
 
       /* call instruction fetch unit if it is not blocked */
-      if (!ruu_fetch_issue_delay)
-          ruu_fetch();
-      else
-          ruu_fetch_issue_delay--;
+      /* ruu_fetch_issue_delay will be checked in ruu_fetch() */
+      ruu_fetch();
+
+      /* decrement per-thread ruu_fetch_issue_delay */
+      /* printf("decrementing from "); */
+      for (i = 0; i < NUM_CONTEXTS; i++)
+        {
+          /* printf("%d ", contexts[i].ruu_fetch_issue_delay); */
+          if (contexts[i].ruu_fetch_issue_delay > 0)
+            contexts[i].ruu_fetch_issue_delay--;
+        }
+      /* printf("\n"); */
 
       /* update buffer occupancy stats */
       /* SMT-FIXME only contexts[0] */
