@@ -86,13 +86,17 @@
 static int num_contexts;
 
 /* use ICOUNT fetching policy */
-static int icount_enabled;
+static int icount_enabled = 1;
+static int smt_fetch_random = 0;
+static int smt_fetch_from_two = 1;
+/* dynamically partition fetch BW (used for 2.8 fetching) */
+static int dynamic_fetch_bw = 1;
+
 
 /* enable FGMT multithreading  */
 static int fgmt_enabled;
 
-/* dynamically partition fetch BW (used for 2.8 fetching) */
-static int dynamic_fetch_bw;
+static char *smt_fetch_policy;
 
 /*
  * the create vector maps a logical register to a creator in the RUU (and
@@ -704,15 +708,13 @@ sim_reg_options(struct opt_odb_t *odb)
   opt_reg_int(odb, "-smt:threads", "number of threads (contexts) supported",
 	      &num_contexts, /* default */4,
 	      /* print */TRUE, /* format */NULL);
-  opt_reg_int(odb, "-smt:icount", "enable ICOUNT fetching policy",
-	      &icount_enabled, /* default */1,
-	      /* print */TRUE, /* format */NULL);
   opt_reg_flag(odb, "-smt:fgmt", "replace SMT with FGMT multithreading",
 	      &fgmt_enabled, /* default */FALSE,
 	      /* print */TRUE, /* format */NULL);
-  opt_reg_int(odb, "-smt:dynamic_fetch_bw", "dynamically partition fetch BW (for 2.8 fetching) */",
-	      &dynamic_fetch_bw, /* default */1,
-	      /* print */TRUE, /* format */NULL);
+  opt_reg_string(odb, "-smt:fetch_policy",
+		 "SMT fetch policy {rr1.8|rand1.8|rr2.4|rr2.8|icount2.8}",
+                 &smt_fetch_policy, /* default */"icount1.8",
+                 /* print */TRUE, /* format */NULL);
 
   opt_reg_note(odb,
 "  Pipetrace range arguments are formatted as follows:\n"
@@ -1016,6 +1018,40 @@ sim_check_options(struct opt_odb_t *odb,        /* options database */
 
   if (fetch_speed < 1)
     fatal("front-end speed must be positive and non-zero");
+
+  if (!mystricmp(smt_fetch_policy, "icount2.8"))
+    {
+      icount_enabled = 1;
+      dynamic_fetch_bw = 1;
+    }
+  else if (!mystricmp(smt_fetch_policy, "rr1.8"))
+    {
+      icount_enabled = 0;
+      dynamic_fetch_bw = 0;
+      smt_fetch_random = 0;
+      smt_fetch_from_two = 0;
+    }
+  else if (!mystricmp(smt_fetch_policy, "rand1.8"))
+    {
+      icount_enabled = 0;
+      dynamic_fetch_bw = 0;
+      smt_fetch_random = 1;
+      smt_fetch_from_two = 0;
+    }
+  else if (!mystricmp(smt_fetch_policy, "rr2.4"))
+    {
+      icount_enabled = 0;
+      dynamic_fetch_bw = 0;
+      smt_fetch_random = 0;
+      smt_fetch_from_two = 1;
+    }
+  else if (!mystricmp(smt_fetch_policy, "rr2.8"))
+    {
+      icount_enabled = 0;
+      dynamic_fetch_bw = 1;
+      smt_fetch_random = 0;
+      smt_fetch_from_two = 1;
+    }
 
   if (!mystricmp(pred_type, "perfect"))
     {
@@ -3475,8 +3511,6 @@ simoo_mem_obj(struct mem_t *mem,		/* memory space to access */
   else
     cmd = Write;
 
-  printf("being used??\n");
-
   if (ctx->spec_mode)
     spec_mem_access(mem, cmd, addr, p, nbytes);
   else
@@ -4526,13 +4560,15 @@ ruu_fetch(void)
   int selected[2];
 
   /* SMT: RR1.8 */
-  /* selected[0] = selected[1] = pivot; */
+  selected[0] = selected[1] = pivot;
 
   /* SMT: random 1.8 */
-  selected[0] = selected[1] = (myrand() % num_contexts);
+  if (smt_fetch_random)
+    selected[0] = selected[1] = (myrand() % num_contexts);
 
   /* SMT: RR2.4 */
-  /* selected[1] = (pivot + num_contexts / 2) % num_contexts; */
+  if (smt_fetch_from_two)
+    selected[1] = (pivot + num_contexts / 2) % num_contexts;
 
   /* SMT: share fetch bandwidth: fetch from one thread in the first half, and
      from another in the second half */
@@ -4586,7 +4622,8 @@ ruu_fetch(void)
               break;
             }
           /* if not, try again with the second thread */
-          printf("trying another thread: %d->%d\n", ctx_id, selected[1]);
+          if (verbose)
+            fprintf(stderr, "trying another thread: %d->%d\n", ctx_id, selected[1]);
           ctx_id = selected[1];
           if (dynamic_fetch_bw)
             {
@@ -4602,19 +4639,22 @@ ruu_fetch(void)
           continue;
         }
 
-      printf("fetch_issue_delay: ");
-      for (j = 0; j < num_contexts; j++)
+      if (verbose)
         {
-          printf("%d ", contexts[j].ruu_fetch_issue_delay);
-        }
-      printf("\n");
+          fprintf(stderr, "fetch_issue_delay: ");
+          for (j = 0; j < num_contexts; j++)
+            {
+              fprintf(stderr, "%d ", contexts[j].ruu_fetch_issue_delay);
+            }
+          fprintf(stderr, "\n");
 
-      printf("[%ld] from icounts=", sim_cycle);
-      for (j = 0; j < num_contexts; j++)
-        {
-          printf("%d ", contexts[j].icount);
+          fprintf(stderr, "[%ld] from icounts=", sim_cycle);
+          for (j = 0; j < num_contexts; j++)
+            {
+              fprintf(stderr, "%d ", contexts[j].icount);
+            }
+          fprintf(stderr, ", fetching i=%dth from %d\n", i, ctx_id);
         }
-      printf(", fetching i=%dth from %d\n", i, ctx_id);
 
       /* printf("fetching from %d\n", ctx_id); */
       /* points to the current thread context being fetched */
@@ -4667,7 +4707,8 @@ ruu_fetch(void)
 	    {
 	      /* I-cache miss, block fetch until it is resolved */
 	      ctx->ruu_fetch_issue_delay += lat - 1;
-              printf("blocked!\n");
+              if (verbose)
+                fprintf(stderr, "fetch blocked!\n");
 	      break;
 	    }
 	  /* else, I-cache/I-TLB hit */
@@ -4748,7 +4789,8 @@ ruu_fetch(void)
       ctx->fetch_tail = (ctx->fetch_tail + 1) & (ruu_ifq_size - 1);
       ctx->fetch_num++;
       ctx->icount++;
-      printf("successfully fetched from context %d\n", ctx_id);
+      if (verbose)
+        fprintf(stderr, "successfully fetched from context %d\n", ctx_id);
     }
 }
 

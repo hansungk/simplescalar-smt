@@ -566,7 +566,8 @@ cache_access(struct cache_t *cp,	/* cache to access */
   /* cache block not found */
 
   /* **MISS** */
-  printf("MISS in context %d, addr %ld\n", context_idx, CACHE_BADDR(cp, addr));
+  if (verbose)
+    fprintf(stderr, "MISS in context %d, addr %ld\n", context_idx, CACHE_BADDR(cp, addr));
   cp->misses++;
 
   /* select the appropriate block to replace, and re-link this entry to
@@ -625,7 +626,8 @@ cache_access(struct cache_t *cp,	/* cache to access */
 
   /* update block tags */
   repl->tag = tag;
-  printf("addr %ld: updated repl from context %d to %d\n", CACHE_BADDR(cp, addr), repl->context_idx, context_idx);
+  if (verbose)
+    fprintf(stderr, "addr %ld: updated repl from context %d to %d\n", CACHE_BADDR(cp, addr), repl->context_idx, context_idx);
   repl->context_idx = context_idx;
   repl->status = CACHE_BLK_VALID;	/* dirty bit set on update */
 
@@ -692,7 +694,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
 
   /* return first cycle data is available to access */
   int ret = (int) MAX(cp->hit_latency, (blk->ready - now));
-  printf("HIT!!! lat=%d, hit_latency=%d\n", ret, cp->hit_latency);
+  /* printf("HIT!!! lat=%d, hit_latency=%d\n", ret, cp->hit_latency); */
   return ret;
   /* return (int) MAX(cp->hit_latency, (blk->ready - now)); */
 
