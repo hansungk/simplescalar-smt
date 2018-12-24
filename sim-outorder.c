@@ -120,6 +120,9 @@ static struct context_t {
   int fetch_num;			/* num entries in IF -> DIS queue */
   int fetch_tail, fetch_head;	/* head and tail pointers of queue */
 
+  /* cycles until fetch issue resumes */
+  unsigned ruu_fetch_issue_delay;
+
   /* (per-thread) speculation mode, non-zero when mis-speculating, i.e., executing
      instructions down the wrong path, thus state recovery will eventually have
      to occur that resets processor register and memory state back to the last
@@ -440,7 +443,7 @@ static unsigned int ptrace_seq = 0;
 /* static int spec_mode = FALSE; */
 
 /* cycles until fetch issue resumes */
-static unsigned ruu_fetch_issue_delay = 0;
+/* static unsigned ruu_fetch_issue_delay = 0; */
 
 /* perfect prediction enabled */
 static int pred_perfect = FALSE;
@@ -2563,7 +2566,7 @@ ruu_writeback(void)
           recovery_count++;
 
 	  /* stall fetch until I-fetch and I-decode recover */
-	  ruu_fetch_issue_delay += ruu_branch_penalty;
+	  ctx->ruu_fetch_issue_delay += ruu_branch_penalty;
 
 	  /* continue writeback of the branch/control instruction */
 	}
@@ -3908,6 +3911,7 @@ ruu_dispatch(void)
   enum md_fault_type fault;
   struct context_t *ctx;
   static int ctx_id = 0;
+  int chance = NUM_CONTEXTS;
 
   made_check = FALSE;
   n_dispatched = 0;
@@ -3921,13 +3925,25 @@ ruu_dispatch(void)
 
   while (/* instruction decode B/W left? */
 	 n_dispatched < (ruu_decode_width * fetch_speed)
-	 /* RUU and LSQ not full? */
-	 && ctx->RUU_num < RUU_size && ctx->LSQ_num < LSQ_size
-	 /* insts still available from fetch unit? */
-	 && ctx->fetch_num != 0
-	 /* on an acceptable trace path */
+         /* thread left? */
+         && chance > 0
 	 && (ruu_include_spec || !ctx->spec_mode))
     {
+      /* if this thread is not dispatchable, try next thread */
+      if (!(/* RUU and LSQ not full? */
+            ctx->RUU_num < RUU_size && ctx->LSQ_num < LSQ_size
+            /* insts still available from fetch unit? */
+            && ctx->fetch_num != 0))
+        {
+          ctx_id = (ctx_id + 1) % NUM_CONTEXTS;
+          ctx = &contexts[ctx_id];
+          regs = &ctx->regs;
+          spec_regs = &ctx->spec_regs;
+          mem = ctx->mem;
+          chance--;
+          continue;
+        }
+
       /* if issuing in-order, block until last op issues if inorder issue */
       if (ruu_inorder_issue
 	  && (last_op.rs && RSLINK_VALID(&last_op)
@@ -4083,7 +4099,7 @@ ruu_dispatch(void)
 	  ctx->fetch_head = (ruu_ifq_size-1);
 	  ctx->fetch_num = 1;
 	  ctx->fetch_tail = 0;
-	  ruu_fetch_issue_delay += ruu_branch_penalty;
+	  ctx->ruu_fetch_issue_delay += ruu_branch_penalty;
 
           if (mf_compat) {
 	    ctx->fetch_pred_PC = ctx->fetch_regs_PC = regs->regs_NPC;
@@ -4333,6 +4349,21 @@ ruu_dispatch(void)
 	dlite_main(regs->regs_PC, ctx->pred_PC, sim_cycle, regs, mem);
     }
 
+  /*
+  if (n_dispatched == 0)
+    {
+      printf("[%ld] no dispatch from ctx %d, RUU_num=%d, LSQ_num=%d, fetch_num=%d, acceptable path=%d\n",
+             sim_cycle, ctx_id,
+             ctx->RUU_num, ctx->LSQ_num, ctx->fetch_num, (ruu_include_spec || !ctx->spec_mode));
+      printf("fetch_num=");
+      for (i = 0; i < NUM_CONTEXTS; i++)
+        {
+          printf("%d ", contexts[i].fetch_num);
+        }
+      printf("\n");
+    }
+  */
+
   /* need to enter DLite at least once per cycle */
   if (!made_check)
     {
@@ -4456,17 +4487,18 @@ ruu_fetch(void)
   int selected[2];
 
   /* SMT: RR2.4 */
-  /* selected[0] = pivot; */
-  /* selected[1] = (pivot + NUM_CONTEXTS / 2) % NUM_CONTEXTS; */
-  /* selected[1] = pivot; */
+  selected[0] = pivot;
+  selected[1] = (pivot + NUM_CONTEXTS / 2) % NUM_CONTEXTS;
+  selected[1] = pivot;
 
   /* SMT: share fetch bandwidth: fetch from one thread in the first half, and
      from another in the second half */
-  icount_select(selected);
+  /* icount_select(selected); */
+
+  /* Let's test if only fetching from the wrong thread still make things work. */
+  /* ctx_id = selected[0] = selected[1] = 2; */
 
   ctx_id = selected[0];
-  /* Let's test if only fetching from the wrong thread still make things work. */
-  /* ctx_id = 2; */
 
   for (i=0, branch_cnt=0;
        /* fetch up to as many instruction as the DISPATCH stage can decode */
@@ -4477,7 +4509,7 @@ ruu_fetch(void)
        && !done;
        i++)
     {
-      /* printf("fetching from %d\n", ctx_id); */
+      printf("fetching from %d\n", ctx_id);
       /* points to the current thread context being fetched */
       struct context_t *ctx = &contexts[ctx_id];
       struct mem_t *mem = ctx->mem;
@@ -4525,7 +4557,7 @@ ruu_fetch(void)
 	  if (lat != cache_il1_lat)
 	    {
 	      /* I-cache miss, block fetch until it is resolved */
-	      ruu_fetch_issue_delay += lat - 1;
+	      ctx->ruu_fetch_issue_delay += lat - 1;
 	      break;
 	    }
 	  /* else, I-cache/I-TLB hit */
@@ -4613,12 +4645,12 @@ ruu_fetch(void)
           ctx_id = selected[1];
         }
 
-      /* printf("from "); */
-      /* for (i = 0; i < NUM_CONTEXTS; i++) */
-      /*   { */
-      /*     printf("%d ", contexts[i].icount); */
-      /*   } */
-      /* printf(", fetching from %d\n", ctx_id); */
+      printf("from ");
+      for (i = 0; i < NUM_CONTEXTS; i++)
+        {
+          printf("%d ", contexts[i].icount);
+        }
+      printf(", fetching from %d\n", ctx_id);
     }
 
   /* update the index of which context to be fetched next FIXME */
@@ -4907,9 +4939,9 @@ sim_main(void)
 
       /* call instruction fetch unit if it is not blocked */
       if (!ruu_fetch_issue_delay)
-	ruu_fetch();
+          ruu_fetch();
       else
-	ruu_fetch_issue_delay--;
+          ruu_fetch_issue_delay--;
 
       /* update buffer occupancy stats */
       /* SMT-FIXME only contexts[0] */
