@@ -26,3 +26,16 @@ zeusmp: bad
 povray: bad
 tonto: bad
 xalanc: bad
+
+# Configuration
+-ruu:size 128
+-lsq:size 64
+-decode:width 4
+-issue:width 8
+-commit:width 4
+-cache:il1 il1:256:32:1
+-cache:dl1 dl1:128:32:4
+-cache:dl1lat 2
+-cache:dl2 ul2:2048:64:8
+-cache:dl2lat 9
+-mem:lat 250 2
