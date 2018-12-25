@@ -4766,7 +4766,7 @@ ruu_fetch(void)
                   sFMT_local_itlb_count += lat - 1;
                 }
               /* il2 miss? */
-              else if (lat > cache_il2_lat)
+              else if (lat > cache_dl2_lat)
                 {
                   if (verbose)
                     fprintf(stderr, "FMT[%d] local il2c miss, lat=%d, cache_il2_lat=%d\n", FMT_fetch, lat, cache_il2_lat);
