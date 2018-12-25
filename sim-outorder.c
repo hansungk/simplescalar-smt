@@ -405,6 +405,8 @@ static counter_t sim_slip = 0;
 /* total number of instructions executed */
 static counter_t sim_total_insn = 0;
 
+static counter_t sim_num_insn_per_thread = 0;
+
 /* total number of memory references committed */
 static counter_t sim_num_refs = 0;
 
@@ -4060,8 +4062,9 @@ ruu_dispatch(void)
       if (!ctx->spec_mode)
 	{
 	  /* one more non-speculative instruction executed */
+          sim_num_insn++;
           if (ctx_id == 0)
-            sim_num_insn++;
+            sim_num_insn_per_thread++;
 	}
 
       /* default effective address (none) and access */
@@ -5102,7 +5105,7 @@ sim_main(void)
       sim_cycle++;
 
       /* finish early? */
-      if (max_insts && sim_num_insn >= max_insts)
+      if (max_insts && sim_num_insn_per_thread >= max_insts)
 	return;
       if (program_complete) return;
     }
