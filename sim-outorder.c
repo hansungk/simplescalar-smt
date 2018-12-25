@@ -4060,7 +4060,8 @@ ruu_dispatch(void)
       if (!ctx->spec_mode)
 	{
 	  /* one more non-speculative instruction executed */
-	  sim_num_insn++;
+          if (ctx_id == 0)
+            sim_num_insn++;
 	}
 
       /* default effective address (none) and access */
